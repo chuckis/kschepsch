@@ -100,6 +100,14 @@ document.addEventListener('touchmove', function(e) {
   }
 }, {passive: false});
 
+// Ensure menu toggle works on touch devices (some environments need touchstart)
+document.addEventListener('DOMContentLoaded', () => {
+  const mt = document.getElementById('menuToggle');
+  if (mt) {
+    mt.addEventListener('touchstart', (ev) => { ev.preventDefault(); mt.click(); });
+  }
+});
+
 // глобальные состояния (инициализируются в initGame)
 let map = {};
 let freeCells = [];
@@ -113,7 +121,10 @@ function initGame() {
   // create first level and set currentLevel
   levels.length = 0;
   currentLevel = 0;
+  gameOver = false;
   generateLevel(0);
+  const d = document.getElementById('deathOverlay'); if (d) d.style.display = 'none';
+  const fr = document.getElementById('floatingRestart'); if (fr) fr.style.display = 'none';
   // place player at this level
   player = {hp: PLAYER_MAX_HP, x: 0, y: 0, inv: []};
   const [px, py] = randomFree();
@@ -216,9 +227,16 @@ function draw() {
   const potionsCount = player.inv.filter(i => i === 'potion').length;
   if (gameOver) {
     status.textContent = `HP: 0    You died. Use Restart in Menu.`;
+    // show death overlay if present
+    const deathO = document.getElementById('deathOverlay');
+    if (deathO) deathO.style.display = 'flex';
+    const fr = document.getElementById('floatingRestart'); if (fr) fr.style.display = 'block';
   } else {
     const enemyCount = (levels[currentLevel] && levels[currentLevel].enemies) ? levels[currentLevel].enemies.length : 0;
     status.textContent = `HP: ${player.hp}    Potions: ${potionsCount}    Enemies: ${enemyCount}    Level: ${currentLevel}`;
+    // ensure overlays are hidden when alive
+    const deathO = document.getElementById('deathOverlay'); if (deathO) deathO.style.display = 'none';
+    const fr2 = document.getElementById('floatingRestart'); if (fr2) fr2.style.display = 'none';
   }
 }
 
@@ -398,11 +416,22 @@ const useBtn = document.getElementById('useBtn');
 const invBtn = document.getElementById('invBtn');
 
 menuToggle.addEventListener('click', () => { menu.style.display = 'flex'; });
+// also ensure touch starts toggle menu on mobile
+menuToggle.addEventListener('touchstart', (ev) => { ev.preventDefault(); menu.style.display = 'flex'; });
 closeMenuBtn.addEventListener('click', () => { menu.style.display = 'none'; });
 // restart: clear save and init fresh
 startBtn.addEventListener('click', () => { clearSave(); initGame(); menu.style.display='none'; });
 resumeBtn.addEventListener('click', () => { menu.style.display='none'; });
 showInvBtn.addEventListener('click', () => { window.gameControls.openInventory(); });
+
+// death overlay no longer contains a restart button (use floating red Restart or Menu)
+
+// allow closing the death overlay (in case floating restart can't be reached)
+const deathClose = document.getElementById('deathClose');
+if (deathClose) {
+  deathClose.addEventListener('click', () => { const d = document.getElementById('deathOverlay'); if (d) d.style.display = 'none'; });
+  deathClose.addEventListener('touchstart', (ev) => { ev.preventDefault(); const d = document.getElementById('deathOverlay'); if (d) d.style.display = 'none'; });
+}
 
 // D-pad touch buttons
 dpad.addEventListener('touchstart', (ev) => {
@@ -415,3 +444,10 @@ dpad.addEventListener('touchstart', (ev) => {
 
 useBtn.addEventListener('touchstart', (ev) => { window.gameControls.usePotion(); ev.preventDefault(); });
 invBtn.addEventListener('touchstart', (ev) => { window.gameControls.openInventory(); ev.preventDefault(); });
+
+// floating restart button (Chromium/mobile fallback)
+const floatingRestart = document.getElementById('floatingRestart');
+if (floatingRestart) {
+  floatingRestart.addEventListener('click', () => { clearSave(); initGame(); });
+  floatingRestart.addEventListener('touchstart', (ev) => { ev.preventDefault(); clearSave(); initGame(); });
+}
