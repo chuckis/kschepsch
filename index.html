@@ -24,6 +24,14 @@
       line-height: 1;
       font-family: monospace;
       touch-action: none; /* для мобильного */
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 1;
+      max-width: calc(100vw - 24px);
+      max-height: calc(100vh - 24px);
+      overflow: hidden;
     }
     /* Mobile UI styles */
     .mobile-controls {
@@ -34,7 +42,7 @@
       gap: 10px;
       align-items: center;
       pointer-events: none; /* enable on children only */
-      z-index: 50;
+      z-index: 85; /* above game display */
     }
     .dpad, .actions {
       display: grid;
@@ -76,7 +84,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 60;
+      z-index: 95;
       color: white;
       font-family: monospace;
     }
@@ -89,7 +97,7 @@
     }
     .menu-panel button { margin: 8px 0; width: 100%; padding: 8px; }
     .menu-toggle {
-      position: fixed; left: 12px; top: 12px; z-index: 70;
+      position: fixed; left: 12px; top: 12px; z-index: 90;
       background: rgba(255,255,255,0.06); color: white; border-radius: 8px; padding: 8px;
       font-family: monospace; pointer-events: auto;
     }

@@ -6,6 +6,10 @@ const MAP_H = 22;
 const ENEMIES_COUNT = 6;
 const ITEMS_COUNT = 8;
 
+// levels
+const levels = [];
+let currentLevel = 0;
+
 const display = new ROT.Display({width: MAP_W, height: MAP_H, fontSize: 18});
 document.getElementById("game").appendChild(display.getContainer());
 
@@ -43,6 +47,50 @@ function updateStatusPosition() {
 window.addEventListener('resize', updateStatusPosition);
 updateStatusPosition();
 
+// Persistence
+const SAVE_KEY = 'kschepsch-save-v1';
+
+function saveGame() {
+  try {
+    const payload = {
+      player,
+      currentLevel,
+      levels,
+      timestamp: Date.now()
+    };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
+  } catch (err) {
+    console.warn('Save failed', err);
+  }
+}
+
+function loadGame() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    // basic validation
+    if (!data || !data.levels || typeof data.currentLevel !== 'number' || !data.player) return false;
+    // restore
+    levels.length = 0;
+    for (let i = 0; i < data.levels.length; i++) {
+      levels[i] = data.levels[i];
+    }
+    currentLevel = data.currentLevel;
+    player = data.player;
+    gameOver = false;
+    draw();
+    return true;
+  } catch (err) {
+    console.warn('Load failed', err);
+    return false;
+  }
+}
+
+function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch (_) {}
+}
+
 // Prevent page scrolling/bounce when interacting with game area or mobile controls
 document.addEventListener('touchmove', function(e) {
   const t = e.target;
@@ -62,49 +110,82 @@ const PLAYER_MAX_HP = 10;
 let gameOver = false;
 
 function initGame() {
-  map = {};
-  freeCells = [];
-  enemies = [];
-  items = [];
-  gameOver = false;
+  // create first level and set currentLevel
+  levels.length = 0;
+  currentLevel = 0;
+  generateLevel(0);
+  // place player at this level
+  player = {hp: PLAYER_MAX_HP, x: 0, y: 0, inv: []};
+  const [px, py] = randomFree();
+  player.x = px; player.y = py;
+  draw();
+  saveGame();
+}
+
+function generateLevel(levelIndex) {
+  const mapLocal = {};
+  const freeLocal = [];
+  const enemiesLocal = [];
+  const itemsLocal = [];
+  const doors = [];
+  const stairs = {up: null, down: null};
 
   const digger = new ROT.Map.Digger(MAP_W, MAP_H);
   digger.create((x, y, value) => {
-    map[`${x},${y}`] = (value === 0);
-    if (value === 0) freeCells.push([x, y]);
+    // store tiles: '.' = floor, '#' = wall
+    mapLocal[`${x},${y}`] = (value === 0) ? '.' : '#';
+    if (value === 0) freeLocal.push([x, y]);
   });
 
   function randomFreeLocal() {
-    const i = Math.floor(ROT.RNG.getUniform() * freeCells.length);
-    return freeCells[i].slice();
+    const i = Math.floor(ROT.RNG.getUniform() * freeLocal.length);
+    return freeLocal[i].slice();
   }
 
-  player = {hp: PLAYER_MAX_HP, x: 0, y: 0, inv: []};
-  [player.x, player.y] = randomFreeLocal();
-
+  // place enemies
   for (let i = 0; i < ENEMIES_COUNT; i++) {
     let [x, y] = randomFreeLocal();
-    if (x === player.x && y === player.y) { i--; continue; }
-    enemies.push({x, y, hp: 3});
+    enemiesLocal.push({x, y, hp: 3});
   }
 
+  // place items
   for (let i = 0; i < ITEMS_COUNT; i++) {
     let [x, y] = randomFreeLocal();
-    if ((x === player.x && y === player.y) || enemies.some(e => e.x === x && e.y === y)) { i--; continue; }
-    items.push({x, y, type: 'potion'});
+    itemsLocal.push({x, y, type: 'potion'});
   }
-  draw();
+
+  // place a few doors along walls: mark door as 'D' on map
+  for (let i = 0; i < 6; i++) {
+    const [x, y] = randomFreeLocal();
+    // only place doors adjacent to a wall
+    const adjWall = [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy]) => mapLocal[`${x+dx},${y+dy}`] === '#');
+    if (adjWall) {
+      mapLocal[`${x},${y}`] = 'D';
+      doors.push([x,y]);
+    }
+  }
+
+  // stairs: up and down
+  const up = randomFreeLocal();
+  const down = randomFreeLocal();
+  mapLocal[`${up[0]},${up[1]}`] = '<';
+  mapLocal[`${down[0]},${down[1]}`] = '>';
+  stairs.up = up; stairs.down = down;
+
+  levels[levelIndex] = {map: mapLocal, freeCells: freeLocal, enemies: enemiesLocal, items: itemsLocal, doors, stairs};
 }
 
 // найти случайную свободную позицию (вспомогательная для других функций)
 function randomFree() {
-  const i = Math.floor(ROT.RNG.getUniform() * freeCells.length);
-  return freeCells[i].slice();
+  const lvl = levels[currentLevel];
+  const i = Math.floor(ROT.RNG.getUniform() * lvl.freeCells.length);
+  return lvl.freeCells[i].slice();
 }
 
-function isFloor(x, y) { return map[`${x},${y}`] === true; }
-function enemyAt(x, y) { return enemies.find(e => e.x === x && e.y === y); }
-function itemAt(x, y) { return items.find(it => it.x === x && it.y === y); }
+function tileAt(x, y) { return levels[currentLevel].map[`${x},${y}`] || '#'; }
+function isFloor(x, y) { return tileAt(x,y) === '.' || tileAt(x,y) === 'D' || tileAt(x,y) === '<' || tileAt(x,y) === '>' ; }
+function enemyAt(x, y) { return levels[currentLevel].enemies.find(e => e.x === x && e.y === y); }
+function itemAt(x, y) { return levels[currentLevel].items.find(it => it.x === x && it.y === y); }
 
 function draw() {
   display.clear();
@@ -118,15 +199,26 @@ function draw() {
     }
   }
 
-  for (const it of items) display.draw(it.x, it.y, '!', 'lime');
-  for (const e of enemies) display.draw(e.x, e.y, 'E', 'red');
+  const lvl = levels[currentLevel];
+  for (const [key,val] of Object.entries(lvl.map)) {
+    const [x,y] = key.split(',').map(Number);
+    if (val === '#') display.draw(x,y,'#','gray');
+    if (val === '.') display.draw(x,y,'.','#000');
+    if (val === 'D') display.draw(x,y,'+','saddlebrown');
+    if (val === '<') display.draw(x,y,'<','white');
+    if (val === '>') display.draw(x,y,'>','white');
+  }
+
+  for (const it of lvl.items) display.draw(it.x, it.y, '!', 'lime');
+  for (const e of lvl.enemies) display.draw(e.x, e.y, 'E', 'red');
   display.draw(player.x, player.y, '@', 'yellow');
 
   const potionsCount = player.inv.filter(i => i === 'potion').length;
   if (gameOver) {
     status.textContent = `HP: 0    You died. Use Restart in Menu.`;
   } else {
-    status.textContent = `HP: ${player.hp}    Potions: ${potionsCount}    Enemies: ${enemies.length}`;
+    const enemyCount = (levels[currentLevel] && levels[currentLevel].enemies) ? levels[currentLevel].enemies.length : 0;
+    status.textContent = `HP: ${player.hp}    Potions: ${potionsCount}    Enemies: ${enemyCount}    Level: ${currentLevel}`;
   }
 }
 
@@ -134,19 +226,54 @@ function tryMove(dx, dy) {
   if (gameOver) return;
   const nx = player.x + dx;
   const ny = player.y + dy;
-  if (!isFloor(nx, ny)) return; // стена
+  const tile = tileAt(nx, ny);
+  if (tile === '#') return; // wall
+
+  // door
+  if (tile === 'D') {
+    // open door -> becomes floor
+    levels[currentLevel].map[`${nx},${ny}`] = '.';
+    player.x = nx; player.y = ny;
+    enemiesAct(); draw(); saveGame(); return;
+  }
+
+  // stairs up/down
+  if (tile === '<') {
+    // go up if exists
+    if (currentLevel > 0) {
+      // move to previous level at matching stairs.down or random
+      currentLevel--;
+      const lvl = levels[currentLevel];
+      const target = lvl.stairs.down || randomFree();
+      player.x = target[0]; player.y = target[1];
+      draw();
+      return;
+    }
+  }
+  if (tile === '>') {
+    // go down: generate next level if missing
+    if (!levels[currentLevel+1]) generateLevel(currentLevel+1);
+    currentLevel++;
+    const lvl = levels[currentLevel];
+    const target = lvl.stairs.up || randomFree();
+    player.x = target[0]; player.y = target[1];
+    draw();
+    saveGame();
+    return;
+  }
 
   const enemy = enemyAt(nx, ny);
   if (enemy) {
     enemy.hp -= 2;
     console.log('You hit the enemy! (hp left:', enemy.hp, ')');
     if (enemy.hp <= 0) {
-      const idx = enemies.indexOf(enemy);
-      if (idx >= 0) enemies.splice(idx, 1);
+      const idx = levels[currentLevel].enemies.indexOf(enemy);
+      if (idx >= 0) levels[currentLevel].enemies.splice(idx, 1);
       console.log('Enemy died');
     }
     enemiesAct();
     draw();
+    saveGame();
     return;
   }
 
@@ -155,19 +282,21 @@ function tryMove(dx, dy) {
   if (it) {
     if (it.type === 'potion') {
       player.inv.push('potion');
-      const idx = items.indexOf(it);
-      if (idx >= 0) items.splice(idx, 1);
+      const idx = levels[currentLevel].items.indexOf(it);
+      if (idx >= 0) levels[currentLevel].items.splice(idx, 1);
       console.log('Picked up a potion');
     }
   }
 
   enemiesAct();
   draw();
+  saveGame();
 }
 
 function enemiesAct() {
   if (gameOver) return;
-  for (const e of enemies) {
+  const lvl = levels[currentLevel];
+  for (const e of lvl.enemies) {
     if (Math.abs(e.x - player.x) + Math.abs(e.y - player.y) === 1) {
       player.hp -= 1;
       console.log('Enemy hits you! HP:', player.hp);
@@ -177,7 +306,6 @@ function enemiesAct() {
       }
       continue;
     }
-
     const passable = (x, y) => isFloor(x, y) && !enemyAt(x, y) && !(x === player.x && y === player.y);
     const astar = new ROT.Path.AStar(player.x, player.y, passable, {topology:4});
     const path = [];
@@ -203,6 +331,7 @@ window.gameControls = {
       player.hp = Math.min(PLAYER_MAX_HP, player.hp + 5);
       console.log('You use a potion. HP:', player.hp);
       draw();
+      saveGame();
     } else {
       console.log('No potions');
     }
@@ -251,8 +380,10 @@ document.addEventListener('touchend', e => {
   }
 });
 
-// initialize the game on load
-initGame();
+// initialize the game on load: try to restore save, otherwise start fresh
+if (!loadGame()) {
+  initGame();
+}
 
 // wire mobile/menu buttons
 const menu = document.getElementById('menu');
@@ -268,7 +399,8 @@ const invBtn = document.getElementById('invBtn');
 
 menuToggle.addEventListener('click', () => { menu.style.display = 'flex'; });
 closeMenuBtn.addEventListener('click', () => { menu.style.display = 'none'; });
-startBtn.addEventListener('click', () => { window.gameControls.restart(); menu.style.display='none'; });
+// restart: clear save and init fresh
+startBtn.addEventListener('click', () => { clearSave(); initGame(); menu.style.display='none'; });
 resumeBtn.addEventListener('click', () => { menu.style.display='none'; });
 showInvBtn.addEventListener('click', () => { window.gameControls.openInventory(); });
 
