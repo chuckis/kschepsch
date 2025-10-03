@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Mini Roguelike</title>
+  <link rel="icon" href="data:;base64,," />
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      color: white;
+    }
+    #game {
+      line-height: 1;
+      font-family: monospace;
+      touch-action: none; /* для мобильного */
+    }
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+
+  <script type="module">
+    import * as ROT from "https://unpkg.com/rot-js/lib/index.js";
+
+    const display = new ROT.Display({width: 20, height: 10, fontSize: 24});
+    document.getElementById("game").appendChild(display.getContainer());
+
+    let playerX = 10, playerY = 5;
+
+    function draw() {
+      display.clear();
+      display.draw(playerX, playerY, "@", "yellow");
+    }
+
+    draw();
+
+    // управление с клавиатуры
+    window.addEventListener("keydown", e => {
+      const keyMap = {
+        ArrowUp: [0, -1],
+        ArrowDown: [0, 1],
+        ArrowLeft: [-1, 0],
+        ArrowRight: [1, 0]
+      };
+      if (!(e.key in keyMap)) return;
+      const [dx, dy] = keyMap[e.key];
+      playerX += dx; playerY += dy;
+      draw();
+    });
+
+    // управление на мобилках свайпами
+    let startX, startY;
+    document.addEventListener("touchstart", e => {
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+    });
+    document.addEventListener("touchend", e => {
+      const dx = e.changedTouches[0].clientX - startX;
+      const dy = e.changedTouches[0].clientY - startY;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        if (dx > 30) playerX++;
+        if (dx < -30) playerX--;
+      } else {
+        if (dy > 30) playerY++;
+        if (dy < -30) playerY--;
+      }
+      draw();
+    });
+  </script>
+</body>
+</html>
