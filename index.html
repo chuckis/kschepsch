@@ -6,6 +6,11 @@
   <title>Mini Roguelike</title>
   <link rel="icon" href="data:;base64,," />
   <style>
+    html, body {
+      height: 100%;
+      overscroll-behavior: none; /* prevent bounce/scroll on mobile */
+      touch-action: none; /* disable default touch handling */
+    }
     body {
       margin: 0;
       background: black;

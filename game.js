@@ -9,12 +9,48 @@ const ITEMS_COUNT = 8;
 const display = new ROT.Display({width: MAP_W, height: MAP_H, fontSize: 18});
 document.getElementById("game").appendChild(display.getContainer());
 
-// добавим строку статуса под дисплеем
+// добавим строку статуса — фиксированную панель (не двигается с картой)
 const status = document.createElement('div');
-status.style.marginTop = '8px';
+status.style.position = 'fixed';
+status.style.background = 'rgba(0,0,0,0.6)';
+status.style.padding = '6px 10px';
+status.style.borderRadius = '6px';
 status.style.fontFamily = 'monospace';
 status.style.whiteSpace = 'pre';
-document.getElementById('game').appendChild(status);
+status.style.zIndex = 65;
+status.style.pointerEvents = 'none';
+document.body.appendChild(status);
+
+// position status responsively: top-center on desktop, bottom-left on small screens
+function updateStatusPosition() {
+  const mobile = window.matchMedia('(max-width: 799px)').matches;
+  if (mobile) {
+    status.style.left = '12px';
+    status.style.bottom = '12px';
+    status.style.top = '';
+    status.style.transform = 'none';
+    status.style.maxWidth = '45%';
+    status.style.textAlign = 'left';
+  } else {
+    status.style.left = '50%';
+    status.style.top = '12px';
+    status.style.bottom = '';
+    status.style.transform = 'translateX(-50%)';
+    status.style.maxWidth = '';
+    status.style.textAlign = 'center';
+  }
+}
+window.addEventListener('resize', updateStatusPosition);
+updateStatusPosition();
+
+// Prevent page scrolling/bounce when interacting with game area or mobile controls
+document.addEventListener('touchmove', function(e) {
+  const t = e.target;
+  if (!t) return;
+  if (t.closest && (t.closest('#game') || t.closest('.mobile-controls') || t.closest('.menu-overlay'))) {
+    e.preventDefault();
+  }
+}, {passive: false});
 
 // глобальные состояния (инициализируются в initGame)
 let map = {};
@@ -86,10 +122,11 @@ function draw() {
   for (const e of enemies) display.draw(e.x, e.y, 'E', 'red');
   display.draw(player.x, player.y, '@', 'yellow');
 
+  const potionsCount = player.inv.filter(i => i === 'potion').length;
   if (gameOver) {
     status.textContent = `HP: 0    You died. Use Restart in Menu.`;
   } else {
-    status.textContent = `HP: ${player.hp}    Inventory: ${player.inv.join(', ') || '-'}    Enemies: ${enemies.length}`;
+    status.textContent = `HP: ${player.hp}    Potions: ${potionsCount}    Enemies: ${enemies.length}`;
   }
 }
 
@@ -171,7 +208,8 @@ window.gameControls = {
     }
   },
   openInventory: () => {
-    alert('Inventory:\n' + (player.inv.length ? player.inv.join('\n') : '(empty)'));
+    const potions = player.inv.filter(i => i === 'potion').length;
+    alert('Potions: ' + potions);
   },
   restart: () => { initGame(); }
 };
