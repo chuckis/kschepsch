@@ -20,58 +20,115 @@
       font-family: monospace;
       touch-action: none; /* для мобильного */
     }
+    /* Mobile UI styles */
+    .mobile-controls {
+      position: fixed;
+      right: 12px;
+      bottom: 12px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      pointer-events: none; /* enable on children only */
+      z-index: 50;
+    }
+    .dpad, .actions {
+      display: grid;
+      gap: 6px;
+      pointer-events: auto;
+    }
+    .dpad {
+      grid-template-columns: 44px 44px 44px;
+      grid-template-rows: 44px 44px 44px;
+      width: 132px;
+      height: 132px;
+      place-items: center;
+      opacity: 0.9;
+    }
+    .actions {
+      grid-template-columns: 56px;
+      grid-auto-rows: 56px;
+      opacity: 0.9;
+    }
+    .ctl-btn {
+      width: 44px;
+      height: 44px;
+      background: rgba(255,255,255,0.06);
+      color: white;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    .action-btn { width: 56px; height: 56px; border-radius: 12px; }
+    .menu-overlay {
+      position: fixed;
+      left: 0; right: 0; top: 0; bottom: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 60;
+      color: white;
+      font-family: monospace;
+    }
+    .menu-panel {
+      background: #111;
+      padding: 18px;
+      border-radius: 8px;
+      min-width: 220px;
+      text-align: center;
+    }
+    .menu-panel button { margin: 8px 0; width: 100%; padding: 8px; }
+    .menu-toggle {
+      position: fixed; left: 12px; top: 12px; z-index: 70;
+      background: rgba(255,255,255,0.06); color: white; border-radius: 8px; padding: 8px;
+      font-family: monospace; pointer-events: auto;
+    }
+    @media(min-width:800px) {
+      .mobile-controls { display: none; }
+      .menu-toggle { display: none; }
+    }
   </style>
 </head>
 <body>
   <div id="game"></div>
 
-  <script type="module">
-    import * as ROT from "https://unpkg.com/rot-js/lib/index.js";
+  <!-- mobile/menu UI -->
+  <button id="menuToggle" class="menu-toggle">Menu</button>
 
-    const display = new ROT.Display({width: 20, height: 10, fontSize: 24});
-    document.getElementById("game").appendChild(display.getContainer());
+  <div id="menu" class="menu-overlay" style="display:none">
+    <div class="menu-panel">
+      <h3>Mini Roguelike</h3>
+      <div style="margin-bottom:8px">Touch controls: D-pad + actions</div>
+      <button id="startBtn">Start / Restart</button>
+      <button id="resumeBtn">Resume</button>
+      <button id="showInvBtn">Inventory</button>
+      <button id="closeMenuBtn">Close</button>
+    </div>
+  </div>
 
-    let playerX = 10, playerY = 5;
+  <div class="mobile-controls" id="mobileControls">
+    <div class="dpad" id="dpad">
+      <div></div>
+      <div class="ctl-btn" data-dir="0,-1">↑</div>
+      <div></div>
+      <div class="ctl-btn" data-dir="-1,0">←</div>
+      <div></div>
+      <div class="ctl-btn" data-dir="1,0">→</div>
+      <div></div>
+      <div class="ctl-btn" data-dir="0,1">↓</div>
+      <div></div>
+    </div>
+    <div class="actions">
+      <div class="ctl-btn action-btn" id="useBtn">U</div>
+      <div class="ctl-btn action-btn" id="invBtn">I</div>
+    </div>
+  </div>
 
-    function draw() {
-      display.clear();
-      display.draw(playerX, playerY, "@", "yellow");
-    }
-
-    draw();
-
-    // управление с клавиатуры
-    window.addEventListener("keydown", e => {
-      const keyMap = {
-        ArrowUp: [0, -1],
-        ArrowDown: [0, 1],
-        ArrowLeft: [-1, 0],
-        ArrowRight: [1, 0]
-      };
-      if (!(e.key in keyMap)) return;
-      const [dx, dy] = keyMap[e.key];
-      playerX += dx; playerY += dy;
-      draw();
-    });
-
-    // управление на мобилках свайпами
-    let startX, startY;
-    document.addEventListener("touchstart", e => {
-      startX = e.touches[0].clientX;
-      startY = e.touches[0].clientY;
-    });
-    document.addEventListener("touchend", e => {
-      const dx = e.changedTouches[0].clientX - startX;
-      const dy = e.changedTouches[0].clientY - startY;
-      if (Math.abs(dx) > Math.abs(dy)) {
-        if (dx > 30) playerX++;
-        if (dx < -30) playerX--;
-      } else {
-        if (dy > 30) playerY++;
-        if (dy < -30) playerY--;
-      }
-      draw();
-    });
-  </script>
+  <script type="module" src="./game.js"></script>
 </body>
 </html>
