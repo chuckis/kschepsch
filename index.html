@@ -88,6 +88,55 @@
       color: white;
       font-family: monospace;
     }
+    .cutscene-overlay {
+      position: fixed;
+      left: 0; right: 0; top: 0; bottom: 0;
+      background: rgba(0,0,0,0.8);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 98;
+      color: #f5f5f5;
+      font-family: monospace;
+      padding: 16px;
+      text-align: left;
+    }
+    .cutscene-panel {
+      background: #0d0d0d;
+      border: 1px solid #333;
+      border-radius: 10px;
+      padding: 16px;
+      max-width: 520px;
+      width: min(92vw, 520px);
+      box-shadow: 0 0 18px rgba(0,0,0,0.6);
+    }
+    .cutscene-title {
+      font-size: 16px;
+      margin: 0 0 10px;
+      color: #f0d28b;
+    }
+    .cutscene-block {
+      background: #141414;
+      border: 1px solid #2b2b2b;
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+    .cutscene-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .cutscene-actions button {
+      background: #1e1e1e;
+      border: 1px solid #3a3a3a;
+      color: #f5f5f5;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-family: monospace;
+    }
     .menu-panel {
       background: #111;
       padding: 18px;
@@ -162,6 +211,16 @@
       <div style="margin-bottom:8px">Game over. Start a new run?</div>
       <!-- Restart moved to floating red button/menu to avoid overlay blocking touch events -->
       <div style="margin-top:8px;color:#f88">Use the Restart button (red) or open Menu to start a new run.</div>
+    </div>
+  </div>
+
+  <div id="cutsceneOverlay" class="cutscene-overlay" role="dialog" aria-live="polite">
+    <div class="cutscene-panel">
+      <h3 class="cutscene-title" id="cutsceneTitle">Cutscene</h3>
+      <div id="cutsceneBlocks"></div>
+      <div class="cutscene-actions">
+        <button id="cutsceneContinue">Continue</button>
+      </div>
     </div>
   </div>
 
