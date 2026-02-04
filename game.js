@@ -224,18 +224,8 @@ function generateLevel(levelIndex) {
   // place items
   for (let i = 0; i < ITEMS_COUNT; i++) {
     let [x, y] = randomFreeLocal();
-    itemsLocal.push({x, y, type: 'potion'});
-  }
-
-  // place a few doors along walls: mark door as 'D' on map
-  for (let i = 0; i < 6; i++) {
-    const [x, y] = randomFreeLocal();
-    // only place doors adjacent to a wall
-    const adjWall = [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy]) => mapLocal[`${x+dx},${y+dy}`] === '#');
-    if (adjWall) {
-      mapLocal[`${x},${y}`] = 'D';
-      doors.push([x,y]);
-    }
+    const type = ROT.RNG.getUniform() < 0.65 ? 'potion' : 'herb';
+    itemsLocal.push({x, y, type});
   }
 
   // stairs: up and down
@@ -244,6 +234,19 @@ function generateLevel(levelIndex) {
   mapLocal[`${up[0]},${up[1]}`] = '<';
   mapLocal[`${down[0]},${down[1]}`] = '>';
   stairs.up = up; stairs.down = down;
+
+  // place a few doors along walls: mark door as 'D' on map
+  const doorCandidates = freeLocal.filter(([x, y]) => {
+    if ((x === up[0] && y === up[1]) || (x === down[0] && y === down[1])) return false;
+    return [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy]) => mapLocal[`${x+dx},${y+dy}`] === '#');
+  });
+  const doorCount = Math.min(6, doorCandidates.length);
+  for (let i = 0; i < doorCount; i++) {
+    const idx = Math.floor(ROT.RNG.getUniform() * doorCandidates.length);
+    const [x, y] = doorCandidates.splice(idx, 1)[0];
+    mapLocal[`${x},${y}`] = 'D';
+    doors.push([x,y]);
+  }
 
   levels[levelIndex] = {map: mapLocal, freeCells: freeLocal, enemies: enemiesLocal, items: itemsLocal, doors, stairs};
 }
@@ -366,6 +369,11 @@ function tryMove(dx, dy) {
       const idx = levels[currentLevel].items.indexOf(it);
       if (idx >= 0) levels[currentLevel].items.splice(idx, 1);
       console.log('Picked up a potion');
+    } else if (it.type === 'herb') {
+      const idx = levels[currentLevel].items.indexOf(it);
+      if (idx >= 0) levels[currentLevel].items.splice(idx, 1);
+      player.hp = Math.min(PLAYER_MAX_HP, player.hp + 2);
+      console.log('Picked up a healing herb. HP:', player.hp);
     }
   }
 
