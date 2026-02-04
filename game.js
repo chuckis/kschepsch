@@ -116,6 +116,67 @@ let enemies = [];
 let items = [];
 const PLAYER_MAX_HP = 10;
 let gameOver = false;
+let cutsceneActive = false;
+
+const cutscenes = {
+  intro: {
+    title: 'Запись в дневнике',
+    blocks: [
+      'Ты спускаешься в темные уровни подземелья, где стены шепчут о забытых героях.',
+      'На поясе звенит последняя фляга. Впереди — поиск артефакта и выход наружу.',
+      'Соберись. Каждая дверь может быть спасением или ловушкой.'
+    ]
+  },
+  level1: {
+    title: 'Глубже во тьму',
+    blocks: [
+      'Сырой воздух становится тяжелее, а шаги звучат чужими.',
+      'Ты чувствуешь, что это место не любит гостей.'
+    ]
+  },
+  level2: {
+    title: 'Следы стражей',
+    blocks: [
+      'На полу — свежие следы когтей и капли зеленоватой крови.',
+      'Кто-то живет здесь. И он рядом.'
+    ]
+  }
+};
+const shownCutscenes = new Set();
+
+function showCutscene(sceneKey) {
+  const scene = cutscenes[sceneKey];
+  if (!scene || shownCutscenes.has(sceneKey)) return;
+  const overlay = document.getElementById('cutsceneOverlay');
+  const title = document.getElementById('cutsceneTitle');
+  const blocksWrap = document.getElementById('cutsceneBlocks');
+  if (!overlay || !title || !blocksWrap) return;
+  shownCutscenes.add(sceneKey);
+  cutsceneActive = true;
+  title.textContent = scene.title;
+  blocksWrap.innerHTML = '';
+  scene.blocks.forEach((text) => {
+    const block = document.createElement('div');
+    block.className = 'cutscene-block';
+    block.textContent = text;
+    blocksWrap.appendChild(block);
+  });
+  overlay.style.display = 'flex';
+}
+
+function closeCutscene() {
+  const overlay = document.getElementById('cutsceneOverlay');
+  if (!overlay) return;
+  overlay.style.display = 'none';
+  cutsceneActive = false;
+}
+
+function triggerCutsceneForLevel(levelIndex) {
+  if (levelIndex === 0) return showCutscene('intro');
+  if (levelIndex === 1) return showCutscene('level1');
+  if (levelIndex === 2) return showCutscene('level2');
+  return undefined;
+}
 
 function initGame() {
   // create first level and set currentLevel
@@ -130,6 +191,7 @@ function initGame() {
   const [px, py] = randomFree();
   player.x = px; player.y = py;
   draw();
+  triggerCutsceneForLevel(0);
   saveGame();
 }
 
@@ -241,7 +303,7 @@ function draw() {
 }
 
 function tryMove(dx, dy) {
-  if (gameOver) return;
+  if (gameOver || cutsceneActive) return;
   const nx = player.x + dx;
   const ny = player.y + dy;
   const tile = tileAt(nx, ny);
@@ -277,6 +339,7 @@ function tryMove(dx, dy) {
     player.x = target[0]; player.y = target[1];
     draw();
     saveGame();
+    triggerCutsceneForLevel(currentLevel);
     return;
   }
 
@@ -312,7 +375,7 @@ function tryMove(dx, dy) {
 }
 
 function enemiesAct() {
-  if (gameOver) return;
+  if (gameOver || cutsceneActive) return;
   const lvl = levels[currentLevel];
   for (const e of lvl.enemies) {
     if (Math.abs(e.x - player.x) + Math.abs(e.y - player.y) === 1) {
@@ -342,7 +405,7 @@ function enemiesAct() {
 window.gameControls = {
   tryMove,
   usePotion: () => {
-    if (gameOver) return;
+    if (gameOver || cutsceneActive) return;
     const idx = player.inv.indexOf('potion');
     if (idx >= 0) {
       player.inv.splice(idx, 1);
@@ -355,6 +418,7 @@ window.gameControls = {
     }
   },
   openInventory: () => {
+    if (cutsceneActive) return;
     const potions = player.inv.filter(i => i === 'potion').length;
     alert('Potions: ' + potions);
   },
@@ -377,6 +441,7 @@ window.addEventListener('keydown', (e) => {
 
 // use potion key
 window.addEventListener('keydown', (e) => {
+  if (cutsceneActive) return;
   if (e.key === 'u') window.gameControls.usePotion();
 });
 
@@ -387,6 +452,7 @@ document.addEventListener('touchstart', e => {
   startY = e.touches[0].clientY;
 });
 document.addEventListener('touchend', e => {
+  if (cutsceneActive) return;
   const dx = e.changedTouches[0].clientX - startX;
   const dy = e.changedTouches[0].clientY - startY;
   if (Math.abs(dx) > Math.abs(dy)) {
@@ -414,6 +480,7 @@ const mobileControls = document.getElementById('mobileControls');
 const dpad = document.getElementById('dpad');
 const useBtn = document.getElementById('useBtn');
 const invBtn = document.getElementById('invBtn');
+const cutsceneContinue = document.getElementById('cutsceneContinue');
 
 menuToggle.addEventListener('click', () => { menu.style.display = 'flex'; });
 // also ensure touch starts toggle menu on mobile
@@ -444,6 +511,11 @@ dpad.addEventListener('touchstart', (ev) => {
 
 useBtn.addEventListener('touchstart', (ev) => { window.gameControls.usePotion(); ev.preventDefault(); });
 invBtn.addEventListener('touchstart', (ev) => { window.gameControls.openInventory(); ev.preventDefault(); });
+
+if (cutsceneContinue) {
+  cutsceneContinue.addEventListener('click', () => { closeCutscene(); });
+  cutsceneContinue.addEventListener('touchstart', (ev) => { ev.preventDefault(); closeCutscene(); });
+}
 
 // floating restart button (Chromium/mobile fallback)
 const floatingRestart = document.getElementById('floatingRestart');
