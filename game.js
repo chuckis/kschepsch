@@ -224,18 +224,8 @@ function generateLevel(levelIndex) {
   // place items
   for (let i = 0; i < ITEMS_COUNT; i++) {
     let [x, y] = randomFreeLocal();
-    itemsLocal.push({x, y, type: 'potion'});
-  }
-
-  // place a few doors along walls: mark door as 'D' on map
-  for (let i = 0; i < 6; i++) {
-    const [x, y] = randomFreeLocal();
-    // only place doors adjacent to a wall
-    const adjWall = [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy]) => mapLocal[`${x+dx},${y+dy}`] === '#');
-    if (adjWall) {
-      mapLocal[`${x},${y}`] = 'D';
-      doors.push([x,y]);
-    }
+    const type = ROT.RNG.getUniform() < 0.65 ? 'potion' : 'herb';
+    itemsLocal.push({x, y, type});
   }
 
   // stairs: up and down
@@ -244,6 +234,66 @@ function generateLevel(levelIndex) {
   mapLocal[`${up[0]},${up[1]}`] = '<';
   mapLocal[`${down[0]},${down[1]}`] = '>';
   stairs.up = up; stairs.down = down;
+
+  // place doors in 1-tile-wide corridors: at most one door per corridor component
+  const isFloorLike = (x, y) => {
+    const t = mapLocal[`${x},${y}`];
+    return t === '.' || t === '<' || t === '>' || t === 'D';
+  };
+  const isWall = (x, y) => mapLocal[`${x},${y}`] === '#';
+  const isOneTileCorridorCell = (x, y) => {
+    const vertical = isFloorLike(x, y - 1) && isFloorLike(x, y + 1) && isWall(x - 1, y) && isWall(x + 1, y);
+    const horizontal = isFloorLike(x - 1, y) && isFloorLike(x + 1, y) && isWall(x, y - 1) && isWall(x, y + 1);
+    return vertical || horizontal;
+  };
+
+  const corridorSet = new Set();
+  for (const [x, y] of freeLocal) {
+    if (isOneTileCorridorCell(x, y)) corridorSet.add(`${x},${y}`);
+  }
+
+  const visited = new Set();
+  const corridorComponents = [];
+  for (const key of corridorSet) {
+    if (visited.has(key)) continue;
+    const comp = [];
+    const q = [key];
+    visited.add(key);
+    while (q.length) {
+      const cur = q.pop();
+      comp.push(cur);
+      const [cx, cy] = cur.split(',').map(Number);
+      const neighbors = [`${cx + 1},${cy}`, `${cx - 1},${cy}`, `${cx},${cy + 1}`, `${cx},${cy - 1}`];
+      for (const n of neighbors) {
+        if (!corridorSet.has(n) || visited.has(n)) continue;
+        visited.add(n);
+        q.push(n);
+      }
+    }
+    corridorComponents.push(comp);
+  }
+
+  const stairKeys = new Set([`${up[0]},${up[1]}`, `${down[0]},${down[1]}`]);
+  for (const comp of corridorComponents) {
+    const candidates = [];
+    for (const key of comp) {
+      if (stairKeys.has(key)) continue;
+      const [x, y] = key.split(',').map(Number);
+      const adj = [[1,0],[-1,0],[0,1],[0,-1]];
+      const touchesRoomLike = adj.some(([dx, dy]) => {
+        const nx = x + dx, ny = y + dy;
+        const nKey = `${nx},${ny}`;
+        return isFloorLike(nx, ny) && !corridorSet.has(nKey);
+      });
+      if (touchesRoomLike) candidates.push([x, y]);
+    }
+
+    if (!candidates.length) continue;
+    const idx = Math.floor(ROT.RNG.getUniform() * candidates.length);
+    const [dx, dy] = candidates[idx];
+    mapLocal[`${dx},${dy}`] = 'D';
+    doors.push([dx, dy]);
+  }
 
   levels[levelIndex] = {map: mapLocal, freeCells: freeLocal, enemies: enemiesLocal, items: itemsLocal, doors, stairs};
 }
@@ -366,6 +416,11 @@ function tryMove(dx, dy) {
       const idx = levels[currentLevel].items.indexOf(it);
       if (idx >= 0) levels[currentLevel].items.splice(idx, 1);
       console.log('Picked up a potion');
+    } else if (it.type === 'herb') {
+      const idx = levels[currentLevel].items.indexOf(it);
+      if (idx >= 0) levels[currentLevel].items.splice(idx, 1);
+      player.hp = Math.min(PLAYER_MAX_HP, player.hp + 2);
+      console.log('Picked up a healing herb. HP:', player.hp);
     }
   }
 
