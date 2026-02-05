@@ -235,17 +235,46 @@ function generateLevel(levelIndex) {
   mapLocal[`${down[0]},${down[1]}`] = '>';
   stairs.up = up; stairs.down = down;
 
-  // place a few doors along walls: mark door as 'D' on map
-  const doorCandidates = freeLocal.filter(([x, y]) => {
-    if ((x === up[0] && y === up[1]) || (x === down[0] && y === down[1])) return false;
-    return [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy]) => mapLocal[`${x+dx},${y+dy}`] === '#');
-  });
+  // place doors only on room boundaries where a 1x1 corridor connects
+  const isFloorLike = (x, y) => {
+    const t = mapLocal[`${x},${y}`];
+    return t === '.' || t === '<' || t === '>' || t === 'D';
+  };
+  const isWall = (x, y) => mapLocal[`${x},${y}`] === '#';
+  const isOneTileCorridor = (x, y) => {
+    const vertical = isFloorLike(x, y - 1) && isFloorLike(x, y + 1) && isWall(x - 1, y) && isWall(x + 1, y);
+    const horizontal = isFloorLike(x - 1, y) && isFloorLike(x + 1, y) && isWall(x, y - 1) && isWall(x, y + 1);
+    return vertical || horizontal;
+  };
+
+  const boundarySet = new Set();
+  const rooms = digger.getRooms();
+  for (const room of rooms) {
+    for (let x = room.getLeft(); x <= room.getRight(); x++) {
+      boundarySet.add(`${x},${room.getTop()}`);
+      boundarySet.add(`${x},${room.getBottom()}`);
+    }
+    for (let y = room.getTop() + 1; y < room.getBottom(); y++) {
+      boundarySet.add(`${room.getLeft()},${y}`);
+      boundarySet.add(`${room.getRight()},${y}`);
+    }
+  }
+
+  const doorCandidates = [];
+  for (const key of boundarySet) {
+    const [x, y] = key.split(',').map(Number);
+    if ((x === up[0] && y === up[1]) || (x === down[0] && y === down[1])) continue;
+    if (mapLocal[key] !== '.') continue;
+    if (!isOneTileCorridor(x, y)) continue;
+    doorCandidates.push([x, y]);
+  }
+
   const doorCount = Math.min(6, doorCandidates.length);
   for (let i = 0; i < doorCount; i++) {
     const idx = Math.floor(ROT.RNG.getUniform() * doorCandidates.length);
     const [x, y] = doorCandidates.splice(idx, 1)[0];
     mapLocal[`${x},${y}`] = 'D';
-    doors.push([x,y]);
+    doors.push([x, y]);
   }
 
   levels[levelIndex] = {map: mapLocal, freeCells: freeLocal, enemies: enemiesLocal, items: itemsLocal, doors, stairs};
