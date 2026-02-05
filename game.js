@@ -235,46 +235,64 @@ function generateLevel(levelIndex) {
   mapLocal[`${down[0]},${down[1]}`] = '>';
   stairs.up = up; stairs.down = down;
 
-  // place doors only on room boundaries where a 1x1 corridor connects
+  // place doors in 1-tile-wide corridors: at most one door per corridor component
   const isFloorLike = (x, y) => {
     const t = mapLocal[`${x},${y}`];
     return t === '.' || t === '<' || t === '>' || t === 'D';
   };
   const isWall = (x, y) => mapLocal[`${x},${y}`] === '#';
-  const isOneTileCorridor = (x, y) => {
+  const isOneTileCorridorCell = (x, y) => {
     const vertical = isFloorLike(x, y - 1) && isFloorLike(x, y + 1) && isWall(x - 1, y) && isWall(x + 1, y);
     const horizontal = isFloorLike(x - 1, y) && isFloorLike(x + 1, y) && isWall(x, y - 1) && isWall(x, y + 1);
     return vertical || horizontal;
   };
 
-  const boundarySet = new Set();
-  const rooms = digger.getRooms();
-  for (const room of rooms) {
-    for (let x = room.getLeft(); x <= room.getRight(); x++) {
-      boundarySet.add(`${x},${room.getTop()}`);
-      boundarySet.add(`${x},${room.getBottom()}`);
-    }
-    for (let y = room.getTop() + 1; y < room.getBottom(); y++) {
-      boundarySet.add(`${room.getLeft()},${y}`);
-      boundarySet.add(`${room.getRight()},${y}`);
-    }
+  const corridorSet = new Set();
+  for (const [x, y] of freeLocal) {
+    if (isOneTileCorridorCell(x, y)) corridorSet.add(`${x},${y}`);
   }
 
-  const doorCandidates = [];
-  for (const key of boundarySet) {
-    const [x, y] = key.split(',').map(Number);
-    if ((x === up[0] && y === up[1]) || (x === down[0] && y === down[1])) continue;
-    if (mapLocal[key] !== '.') continue;
-    if (!isOneTileCorridor(x, y)) continue;
-    doorCandidates.push([x, y]);
+  const visited = new Set();
+  const corridorComponents = [];
+  for (const key of corridorSet) {
+    if (visited.has(key)) continue;
+    const comp = [];
+    const q = [key];
+    visited.add(key);
+    while (q.length) {
+      const cur = q.pop();
+      comp.push(cur);
+      const [cx, cy] = cur.split(',').map(Number);
+      const neighbors = [`${cx + 1},${cy}`, `${cx - 1},${cy}`, `${cx},${cy + 1}`, `${cx},${cy - 1}`];
+      for (const n of neighbors) {
+        if (!corridorSet.has(n) || visited.has(n)) continue;
+        visited.add(n);
+        q.push(n);
+      }
+    }
+    corridorComponents.push(comp);
   }
 
-  const doorCount = Math.min(6, doorCandidates.length);
-  for (let i = 0; i < doorCount; i++) {
-    const idx = Math.floor(ROT.RNG.getUniform() * doorCandidates.length);
-    const [x, y] = doorCandidates.splice(idx, 1)[0];
-    mapLocal[`${x},${y}`] = 'D';
-    doors.push([x, y]);
+  const stairKeys = new Set([`${up[0]},${up[1]}`, `${down[0]},${down[1]}`]);
+  for (const comp of corridorComponents) {
+    const candidates = [];
+    for (const key of comp) {
+      if (stairKeys.has(key)) continue;
+      const [x, y] = key.split(',').map(Number);
+      const adj = [[1,0],[-1,0],[0,1],[0,-1]];
+      const touchesRoomLike = adj.some(([dx, dy]) => {
+        const nx = x + dx, ny = y + dy;
+        const nKey = `${nx},${ny}`;
+        return isFloorLike(nx, ny) && !corridorSet.has(nKey);
+      });
+      if (touchesRoomLike) candidates.push([x, y]);
+    }
+
+    if (!candidates.length) continue;
+    const idx = Math.floor(ROT.RNG.getUniform() * candidates.length);
+    const [dx, dy] = candidates[idx];
+    mapLocal[`${dx},${dy}`] = 'D';
+    doors.push([dx, dy]);
   }
 
   levels[levelIndex] = {map: mapLocal, freeCells: freeLocal, enemies: enemiesLocal, items: itemsLocal, doors, stairs};
