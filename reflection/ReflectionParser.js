@@ -7,11 +7,23 @@ const ENEMY_CLASS_BY_ARCHETYPE = {
 const ITEM_CLASS_BY_TYPE = {
   insight: 'scroll',
   tool: 'weapon',
-  skill: 'passive_buff'
+  skill: 'passive_buff',
+  pattern: 'passive_buff'
 };
 
 function numberOr(value, fallback) {
-  return Number.isFinite(value) ? value : fallback;
+  if (Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function tagValue(tags, tagName) {
+  if (!Array.isArray(tags)) return '';
+  const entry = tags.find((tag) => Array.isArray(tag) && tag[0] === tagName && typeof tag[1] === 'string');
+  return entry ? entry[1] : '';
 }
 
 export class ReflectionParser {
@@ -27,7 +39,13 @@ export class ReflectionParser {
       throw new Error('Invalid Nostr event: content is not JSON');
     }
 
-    return this.parsePayload(payload);
+    const sessionIdFromTag = tagValue(nostrEvent.tags, 'd');
+    const model = this.parsePayload(payload);
+    return {
+      ...model,
+      sessionId: model.sessionId || sessionIdFromTag || `session-${Date.now()}`,
+      createdAt: numberOr(payload.timestamp, numberOr(nostrEvent.created_at, Date.now()))
+    };
   }
 
   parsePayload(payload) {
@@ -70,7 +88,7 @@ export class ReflectionParser {
     const narrative = [reflection.goal, reflection.outcome, reflection.summary].filter(Boolean).join(' ');
 
     return {
-      sessionId: payload.session_id || `session-${Date.now()}`,
+      sessionId: payload.session_id || '',
       difficulty,
       enemies,
       items,

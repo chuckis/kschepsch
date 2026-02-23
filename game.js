@@ -12,11 +12,16 @@ const ITEMS_COUNT = 8;
 const NOSTR_KIND_REFLECTION = 31337;
 const NOSTR_TAG_REFLECTION = "reflection";
 const DEFAULT_NOSTR_RELAY = "wss://relay.damus.io";
+const NANOBOT_PUBKEY_STORAGE_KEY = "kschepsch-nanobot-pubkey-v1";
+const TEST_LEVEL_PATH = "./test/test-level.json";
+const TEST_EVENT_PATH = "./test/test-event.json";
 
 // levels
 const levels = [];
 let currentLevel = 0;
 const reflectionQueue = [];
+let testReflectionPayload = null;
+let testReflectionLoadAttempted = false;
 
 const reflectionParser = new ReflectionParser();
 const levelBuilder = new LevelBuilder({baseWidth: MAP_W, baseHeight: MAP_H});
@@ -24,6 +29,27 @@ const levelManager = new LevelManager(levelBuilder);
 const nostrConnector = new NostrConnector({
   relayUrl: window.REFLECTION_RELAY_URL || DEFAULT_NOSTR_RELAY
 });
+let reflectionStreamStarted = false;
+
+function getSavedNanobotPubkey() {
+  try {
+    return localStorage.getItem(NANOBOT_PUBKEY_STORAGE_KEY) || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function saveNanobotPubkey(pubkey) {
+  try {
+    if (!pubkey) {
+      localStorage.removeItem(NANOBOT_PUBKEY_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(NANOBOT_PUBKEY_STORAGE_KEY, pubkey);
+  } catch (err) {
+    console.warn("Failed to persist NANOBOT pubkey:", err);
+  }
+}
 
 function buildFallbackReflectionPayload(levelIndex) {
   const obstacleCount = Math.min(10, 3 + levelIndex);
@@ -59,8 +85,69 @@ function buildFallbackReflectionPayload(levelIndex) {
   };
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function fixtureToPayload(fixture) {
+  if (!fixture || typeof fixture !== "object") return null;
+  if (typeof fixture.content === "string") {
+    try {
+      return JSON.parse(fixture.content);
+    } catch (_) {
+      return null;
+    }
+  }
+  if (typeof fixture.session_id === "string" || fixture.metrics || fixture.reflection) return fixture;
+  return null;
+}
+
+async function tryLoadFixture(path) {
+  try {
+    const response = await fetch(path, {cache: "no-store"});
+    if (!response.ok) return null;
+    const json = await response.json();
+    const payload = fixtureToPayload(json);
+    if (!payload) {
+      console.warn("Fixture JSON shape is invalid:", path);
+      return null;
+    }
+    return payload;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function loadTestReflectionPayload() {
+  if (testReflectionLoadAttempted) return testReflectionPayload;
+  testReflectionLoadAttempted = true;
+
+  const fromLevel = await tryLoadFixture(TEST_LEVEL_PATH);
+  if (fromLevel) {
+    testReflectionPayload = fromLevel;
+    console.log("Loaded test reflection fixture:", TEST_LEVEL_PATH);
+    return testReflectionPayload;
+  }
+
+  const fromEvent = await tryLoadFixture(TEST_EVENT_PATH);
+  if (fromEvent) {
+    testReflectionPayload = fromEvent;
+    console.log("Loaded test reflection fixture:", TEST_EVENT_PATH);
+    return testReflectionPayload;
+  }
+
+  console.log("No test reflection fixture found, using procedural fallback.");
+  return null;
+}
+
 function reflectionModelForLevel(levelIndex) {
   if (reflectionQueue.length > 0) return reflectionQueue.shift();
+  if (testReflectionPayload) {
+    const payload = cloneJson(testReflectionPayload);
+    if (!payload.session_id) payload.session_id = `test-fixture-session-${levelIndex}`;
+    payload.session_id = `${payload.session_id}-lvl${levelIndex}`;
+    return reflectionParser.parsePayload(payload);
+  }
   return reflectionParser.parsePayload(buildFallbackReflectionPayload(levelIndex));
 }
 
@@ -75,21 +162,26 @@ function enqueueReflectionEvent(event) {
 }
 
 function startReflectionStream() {
-  const pubkey = window.NANOBOT_PUBKEY;
+  const pubkey = window.NANOBOT_PUBKEY || getSavedNanobotPubkey();
   if (!pubkey) {
-    console.log("Nostr reflection stream disabled: set window.NANOBOT_PUBKEY to enable.");
+    console.log("Nostr reflection stream disabled: set pubkey in menu or window.NANOBOT_PUBKEY.");
     return;
   }
 
-  nostrConnector.onReflection((event) => {
-    if (event.kind !== NOSTR_KIND_REFLECTION) return;
-    const tags = Array.isArray(event.tags) ? event.tags : [];
-    const tagged = tags.some((tag) => Array.isArray(tag) && tag[0] === "t" && tag[1] === NOSTR_TAG_REFLECTION);
-    if (!tagged) return;
-    enqueueReflectionEvent(event);
-  });
+  if (!reflectionStreamStarted) {
+    nostrConnector.onReflection((event) => {
+      if (event.kind !== NOSTR_KIND_REFLECTION) return;
+      const tags = Array.isArray(event.tags) ? event.tags : [];
+      const tagged = tags.some((tag) => Array.isArray(tag) && tag[0] === "t" && tag[1] === NOSTR_TAG_REFLECTION);
+      if (!tagged) return;
+      enqueueReflectionEvent(event);
+    });
+    reflectionStreamStarted = true;
+  }
+
   nostrConnector.connect();
   nostrConnector.subscribe(pubkey);
+  console.log("Nostr reflection stream subscribed for:", pubkey);
 }
 
 const display = new ROT.Display({width: MAP_W, height: MAP_H, fontSize: 18});
@@ -554,10 +646,17 @@ document.addEventListener('touchend', e => {
 });
 
 // initialize the game on load: try to restore save, otherwise start fresh
-startReflectionStream();
-if (!loadGame()) {
-  initGame();
+async function bootstrapGame() {
+  await loadTestReflectionPayload();
+  startReflectionStream();
+  if (!loadGame()) initGame();
 }
+
+bootstrapGame().catch((err) => {
+  console.warn("Bootstrap failed, starting with procedural fallback:", err);
+  startReflectionStream();
+  if (!loadGame()) initGame();
+});
 
 // wire mobile/menu buttons
 const menu = document.getElementById('menu');
@@ -566,6 +665,8 @@ const startBtn = document.getElementById('startBtn');
 const resumeBtn = document.getElementById('resumeBtn');
 const showInvBtn = document.getElementById('showInvBtn');
 const closeMenuBtn = document.getElementById('closeMenuBtn');
+const nostrPubkeyInput = document.getElementById('nostrPubkeyInput');
+const saveNostrPubkeyBtn = document.getElementById('saveNostrPubkeyBtn');
 const mobileControls = document.getElementById('mobileControls');
 const dpad = document.getElementById('dpad');
 const useBtn = document.getElementById('useBtn');
@@ -580,6 +681,20 @@ closeMenuBtn.addEventListener('click', () => { menu.style.display = 'none'; });
 startBtn.addEventListener('click', () => { clearSave(); initGame(); menu.style.display='none'; });
 resumeBtn.addEventListener('click', () => { menu.style.display='none'; });
 showInvBtn.addEventListener('click', () => { window.gameControls.openInventory(); });
+if (nostrPubkeyInput) {
+  nostrPubkeyInput.value = window.NANOBOT_PUBKEY || getSavedNanobotPubkey();
+}
+if (saveNostrPubkeyBtn) {
+  const saveNostrKey = () => {
+    const value = (nostrPubkeyInput?.value || '').trim();
+    saveNanobotPubkey(value);
+    window.NANOBOT_PUBKEY = value;
+    startReflectionStream();
+    console.log(value ? "Nostr pubkey saved." : "Nostr pubkey cleared.");
+  };
+  saveNostrPubkeyBtn.addEventListener('click', saveNostrKey);
+  saveNostrPubkeyBtn.addEventListener('touchstart', (ev) => { ev.preventDefault(); saveNostrKey(); });
+}
 
 // death overlay no longer contains a restart button (use floating red Restart or Menu)
 
