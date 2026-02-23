@@ -1,14 +1,96 @@
 import * as ROT from "https://unpkg.com/rot-js/lib/index.js";
+import {NostrConnector} from "./nostr/NostrConnector.js";
+import {ReflectionParser} from "./reflection/ReflectionParser.js";
+import {LevelBuilder} from "./level/LevelBuilder.js";
+import {LevelManager} from "./level/LevelManager.js";
 
 // параметры карты и игры
 const MAP_W = 40;
 const MAP_H = 22;
 const ENEMIES_COUNT = 6;
 const ITEMS_COUNT = 8;
+const NOSTR_KIND_REFLECTION = 31337;
+const NOSTR_TAG_REFLECTION = "reflection";
+const DEFAULT_NOSTR_RELAY = "wss://relay.damus.io";
 
 // levels
 const levels = [];
 let currentLevel = 0;
+const reflectionQueue = [];
+
+const reflectionParser = new ReflectionParser();
+const levelBuilder = new LevelBuilder({baseWidth: MAP_W, baseHeight: MAP_H});
+const levelManager = new LevelManager(levelBuilder);
+const nostrConnector = new NostrConnector({
+  relayUrl: window.REFLECTION_RELAY_URL || DEFAULT_NOSTR_RELAY
+});
+
+function buildFallbackReflectionPayload(levelIndex) {
+  const obstacleCount = Math.min(10, 3 + levelIndex);
+  const acquisitionCount = Math.max(2, 5 - Math.floor(levelIndex / 2));
+  const obstacles = Array.from({length: obstacleCount}, (_, i) => ({
+    archetype: i % 3 === 0 ? "blocker" : i % 3 === 1 ? "confusion" : "retry_loop",
+    intensity: 0.2 + Math.min(1.5, levelIndex * 0.12 + i * 0.05),
+    name: `Obstacle ${i + 1}`,
+    description: `Generated from fallback reflection for level ${levelIndex}.`
+  }));
+  const acquisitions = Array.from({length: acquisitionCount}, (_, i) => ({
+    type: i % 3 === 0 ? "insight" : i % 3 === 1 ? "tool" : "skill",
+    value: 1 + levelIndex * 0.2,
+    name: `Acquisition ${i + 1}`
+  }));
+
+  return {
+    session_id: `fallback-session-${levelIndex}`,
+    reflection: {
+      goal: "Advance deeper and stay alive.",
+      outcome: "Generated fallback session.",
+      summary: `No live reflection feed available, using procedural session ${levelIndex}.`
+    },
+    metrics: {
+      duration_minutes: 45 + levelIndex * 8,
+      tool_calls: 3 + levelIndex,
+      focus_score: Math.max(0.2, 0.75 - levelIndex * 0.04),
+      friction: Math.min(1, 0.25 + levelIndex * 0.05)
+    },
+    obstacles,
+    acquisitions,
+    energy_curve: [0.3, 0.6, 0.8]
+  };
+}
+
+function reflectionModelForLevel(levelIndex) {
+  if (reflectionQueue.length > 0) return reflectionQueue.shift();
+  return reflectionParser.parsePayload(buildFallbackReflectionPayload(levelIndex));
+}
+
+function enqueueReflectionEvent(event) {
+  try {
+    const model = reflectionParser.parseEvent(event);
+    reflectionQueue.push(model);
+    console.log("Reflection queued:", model.sessionId, "difficulty:", model.difficulty.toFixed(2));
+  } catch (err) {
+    console.warn("Reflection event ignored:", err.message);
+  }
+}
+
+function startReflectionStream() {
+  const pubkey = window.NANOBOT_PUBKEY;
+  if (!pubkey) {
+    console.log("Nostr reflection stream disabled: set window.NANOBOT_PUBKEY to enable.");
+    return;
+  }
+
+  nostrConnector.onReflection((event) => {
+    if (event.kind !== NOSTR_KIND_REFLECTION) return;
+    const tags = Array.isArray(event.tags) ? event.tags : [];
+    const tagged = tags.some((tag) => Array.isArray(tag) && tag[0] === "t" && tag[1] === NOSTR_TAG_REFLECTION);
+    if (!tagged) return;
+    enqueueReflectionEvent(event);
+  });
+  nostrConnector.connect();
+  nostrConnector.subscribe(pubkey);
+}
 
 const display = new ROT.Display({width: MAP_W, height: MAP_H, fontSize: 18});
 document.getElementById("game").appendChild(display.getContainer());
@@ -181,9 +263,10 @@ function triggerCutsceneForLevel(levelIndex) {
 function initGame() {
   // create first level and set currentLevel
   levels.length = 0;
+  levelManager.restart();
   currentLevel = 0;
   gameOver = false;
-  generateLevel(0);
+  generateLevel(0, reflectionModelForLevel(0));
   const d = document.getElementById('deathOverlay'); if (d) d.style.display = 'none';
   const fr = document.getElementById('floatingRestart'); if (fr) fr.style.display = 'none';
   // place player at this level
@@ -195,7 +278,13 @@ function initGame() {
   saveGame();
 }
 
-function generateLevel(levelIndex) {
+function generateLevel(levelIndex, reflectionModel = null) {
+  if (reflectionModel) {
+    const {level} = levelManager.load(reflectionModel, {width: MAP_W, height: MAP_H});
+    levels[levelIndex] = level;
+    return;
+  }
+
   const mapLocal = {};
   const freeLocal = [];
   const enemiesLocal = [];
@@ -282,8 +371,8 @@ function draw() {
     if (val === '>') display.draw(x,y,'>','white');
   }
 
-  for (const it of lvl.items) display.draw(it.x, it.y, '!', 'lime');
-  for (const e of lvl.enemies) display.draw(e.x, e.y, 'E', 'red');
+  for (const it of lvl.items) display.draw(it.x, it.y, it.char || '!', it.color || 'lime');
+  for (const e of lvl.enemies) display.draw(e.x, e.y, e.char || 'E', e.color || 'red');
   display.draw(player.x, player.y, '@', 'yellow');
 
   const potionsCount = player.inv.filter(i => i === 'potion').length;
@@ -295,7 +384,8 @@ function draw() {
     const fr = document.getElementById('floatingRestart'); if (fr) fr.style.display = 'block';
   } else {
     const enemyCount = (levels[currentLevel] && levels[currentLevel].enemies) ? levels[currentLevel].enemies.length : 0;
-    status.textContent = `HP: ${player.hp}    Potions: ${potionsCount}    Enemies: ${enemyCount}    Level: ${currentLevel}`;
+    const sessionId = levels[currentLevel]?.sessionId || `procedural-${currentLevel}`;
+    status.textContent = `HP: ${player.hp}    Potions: ${potionsCount}    Enemies: ${enemyCount}    Level: ${currentLevel}    Session: ${sessionId}`;
     // ensure overlays are hidden when alive
     const deathO = document.getElementById('deathOverlay'); if (deathO) deathO.style.display = 'none';
     const fr2 = document.getElementById('floatingRestart'); if (fr2) fr2.style.display = 'none';
@@ -332,7 +422,7 @@ function tryMove(dx, dy) {
   }
   if (tile === '>') {
     // go down: generate next level if missing
-    if (!levels[currentLevel+1]) generateLevel(currentLevel+1);
+    if (!levels[currentLevel+1]) generateLevel(currentLevel + 1, reflectionModelForLevel(currentLevel + 1));
     currentLevel++;
     const lvl = levels[currentLevel];
     const target = lvl.stairs.up || randomFree();
@@ -361,12 +451,11 @@ function tryMove(dx, dy) {
   const it = itemAt(nx, ny);
   player.x = nx; player.y = ny;
   if (it) {
-    if (it.type === 'potion') {
-      player.inv.push('potion');
-      const idx = levels[currentLevel].items.indexOf(it);
-      if (idx >= 0) levels[currentLevel].items.splice(idx, 1);
-      console.log('Picked up a potion');
-    }
+    // For now every acquisition grants a consumable charge to preserve existing controls.
+    player.inv.push('potion');
+    const idx = levels[currentLevel].items.indexOf(it);
+    if (idx >= 0) levels[currentLevel].items.splice(idx, 1);
+    console.log('Picked up:', it.name || it.type || 'item');
   }
 
   enemiesAct();
@@ -465,6 +554,7 @@ document.addEventListener('touchend', e => {
 });
 
 // initialize the game on load: try to restore save, otherwise start fresh
+startReflectionStream();
 if (!loadGame()) {
   initGame();
 }
