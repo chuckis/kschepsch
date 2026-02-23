@@ -4,11 +4,8 @@ import {ReflectionParser} from "./reflection/ReflectionParser.js";
 import {LevelBuilder} from "./level/LevelBuilder.js";
 import {LevelManager} from "./level/LevelManager.js";
 
-// параметры карты и игры
 const MAP_W = 40;
 const MAP_H = 22;
-const ENEMIES_COUNT = 6;
-const ITEMS_COUNT = 8;
 const NOSTR_KIND_REFLECTION = 31337;
 const NOSTR_TAG_REFLECTION = "reflection";
 const DEFAULT_NOSTR_RELAY = "wss://relay.damus.io";
@@ -51,40 +48,6 @@ function saveNanobotPubkey(pubkey) {
   }
 }
 
-function buildFallbackReflectionPayload(levelIndex) {
-  const obstacleCount = Math.min(10, 3 + levelIndex);
-  const acquisitionCount = Math.max(2, 5 - Math.floor(levelIndex / 2));
-  const obstacles = Array.from({length: obstacleCount}, (_, i) => ({
-    archetype: i % 3 === 0 ? "blocker" : i % 3 === 1 ? "confusion" : "retry_loop",
-    intensity: 0.2 + Math.min(1.5, levelIndex * 0.12 + i * 0.05),
-    name: `Obstacle ${i + 1}`,
-    description: `Generated from fallback reflection for level ${levelIndex}.`
-  }));
-  const acquisitions = Array.from({length: acquisitionCount}, (_, i) => ({
-    type: i % 3 === 0 ? "insight" : i % 3 === 1 ? "tool" : "skill",
-    value: 1 + levelIndex * 0.2,
-    name: `Acquisition ${i + 1}`
-  }));
-
-  return {
-    session_id: `fallback-session-${levelIndex}`,
-    reflection: {
-      goal: "Advance deeper and stay alive.",
-      outcome: "Generated fallback session.",
-      summary: `No live reflection feed available, using procedural session ${levelIndex}.`
-    },
-    metrics: {
-      duration_minutes: 45 + levelIndex * 8,
-      tool_calls: 3 + levelIndex,
-      focus_score: Math.max(0.2, 0.75 - levelIndex * 0.04),
-      friction: Math.min(1, 0.25 + levelIndex * 0.05)
-    },
-    obstacles,
-    acquisitions,
-    energy_curve: [0.3, 0.6, 0.8]
-  };
-}
-
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -122,13 +85,6 @@ async function loadTestReflectionPayload() {
   if (testReflectionLoadAttempted) return testReflectionPayload;
   testReflectionLoadAttempted = true;
 
-  const fromLevel = await tryLoadFixture(TEST_LEVEL_PATH);
-  if (fromLevel) {
-    testReflectionPayload = fromLevel;
-    console.log("Loaded test reflection fixture:", TEST_LEVEL_PATH);
-    return testReflectionPayload;
-  }
-
   const fromEvent = await tryLoadFixture(TEST_EVENT_PATH);
   if (fromEvent) {
     testReflectionPayload = fromEvent;
@@ -136,7 +92,14 @@ async function loadTestReflectionPayload() {
     return testReflectionPayload;
   }
 
-  console.log("No test reflection fixture found, using procedural fallback.");
+  const fromLevel = await tryLoadFixture(TEST_LEVEL_PATH);
+  if (fromLevel) {
+    testReflectionPayload = fromLevel;
+    console.log("Loaded test reflection fixture:", TEST_LEVEL_PATH);
+    return testReflectionPayload;
+  }
+
+  console.log("No test reflection fixture found.");
   return null;
 }
 
@@ -148,13 +111,27 @@ function reflectionModelForLevel(levelIndex) {
     payload.session_id = `${payload.session_id}-lvl${levelIndex}`;
     return reflectionParser.parsePayload(payload);
   }
-  return reflectionParser.parsePayload(buildFallbackReflectionPayload(levelIndex));
+  return null;
+}
+
+function markMenuNostrEventReady() {
+  const menuBtn = document.getElementById("menuToggle");
+  if (!menuBtn) return;
+  menuBtn.style.background = "rgba(255,140,0,0.95)";
+  menuBtn.style.color = "black";
+  menuBtn.style.border = "1px solid #cc6f00";
+}
+
+function notifyNoReflectionData() {
+  console.warn("No reflection data available. Add a test JSON fixture or wait for a Nostr event.");
+  status.textContent = "No reflection data. Wait for Nostr or add test fixture.";
 }
 
 function enqueueReflectionEvent(event) {
   try {
     const model = reflectionParser.parseEvent(event);
     reflectionQueue.push(model);
+    markMenuNostrEventReady();
     console.log("Reflection queued:", model.sessionId, "difficulty:", model.difficulty.toFixed(2));
   } catch (err) {
     console.warn("Reflection event ignored:", err.message);
@@ -358,7 +335,12 @@ function initGame() {
   levelManager.restart();
   currentLevel = 0;
   gameOver = false;
-  generateLevel(0, reflectionModelForLevel(0));
+  const firstModel = reflectionModelForLevel(0);
+  if (!firstModel) {
+    notifyNoReflectionData();
+    return;
+  }
+  generateLevel(0, firstModel);
   const d = document.getElementById('deathOverlay'); if (d) d.style.display = 'none';
   const fr = document.getElementById('floatingRestart'); if (fr) fr.style.display = 'none';
   // place player at this level
@@ -370,63 +352,35 @@ function initGame() {
   saveGame();
 }
 
-function generateLevel(levelIndex, reflectionModel = null) {
-  if (reflectionModel) {
-    const {level} = levelManager.load(reflectionModel, {width: MAP_W, height: MAP_H});
-    levels[levelIndex] = level;
+function tryFreshLevel() {
+  const nextIndex = currentLevel + 1;
+  const model = reflectionModelForLevel(nextIndex);
+  if (!model || !generateLevel(nextIndex, model)) {
+    notifyNoReflectionData();
     return;
   }
 
-  const mapLocal = {};
-  const freeLocal = [];
-  const enemiesLocal = [];
-  const itemsLocal = [];
-  const doors = [];
-  const stairs = {up: null, down: null};
-
-  const digger = new ROT.Map.Digger(MAP_W, MAP_H);
-  digger.create((x, y, value) => {
-    // store tiles: '.' = floor, '#' = wall
-    mapLocal[`${x},${y}`] = (value === 0) ? '.' : '#';
-    if (value === 0) freeLocal.push([x, y]);
-  });
-
-  function randomFreeLocal() {
-    const i = Math.floor(ROT.RNG.getUniform() * freeLocal.length);
-    return freeLocal[i].slice();
+  currentLevel = nextIndex;
+  if (!player) player = {hp: PLAYER_MAX_HP, x: 0, y: 0, inv: []};
+  if (player.hp <= 0) {
+    player.hp = PLAYER_MAX_HP;
+    gameOver = false;
   }
 
-  // place enemies
-  for (let i = 0; i < ENEMIES_COUNT; i++) {
-    let [x, y] = randomFreeLocal();
-    enemiesLocal.push({x, y, hp: 3});
-  }
+  const lvl = levels[currentLevel];
+  const target = lvl.stairs.up || randomFree();
+  player.x = target[0];
+  player.y = target[1];
+  draw();
+  saveGame();
+  triggerCutsceneForLevel(currentLevel);
+}
 
-  // place items
-  for (let i = 0; i < ITEMS_COUNT; i++) {
-    let [x, y] = randomFreeLocal();
-    itemsLocal.push({x, y, type: 'potion'});
-  }
-
-  // place a few doors along walls: mark door as 'D' on map
-  for (let i = 0; i < 6; i++) {
-    const [x, y] = randomFreeLocal();
-    // only place doors adjacent to a wall
-    const adjWall = [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy]) => mapLocal[`${x+dx},${y+dy}`] === '#');
-    if (adjWall) {
-      mapLocal[`${x},${y}`] = 'D';
-      doors.push([x,y]);
-    }
-  }
-
-  // stairs: up and down
-  const up = randomFreeLocal();
-  const down = randomFreeLocal();
-  mapLocal[`${up[0]},${up[1]}`] = '<';
-  mapLocal[`${down[0]},${down[1]}`] = '>';
-  stairs.up = up; stairs.down = down;
-
-  levels[levelIndex] = {map: mapLocal, freeCells: freeLocal, enemies: enemiesLocal, items: itemsLocal, doors, stairs};
+function generateLevel(levelIndex, reflectionModel) {
+  if (!reflectionModel) return false;
+  const {level} = levelManager.load(reflectionModel, {width: MAP_W, height: MAP_H});
+  levels[levelIndex] = level;
+  return true;
 }
 
 // найти случайную свободную позицию (вспомогательная для других функций)
@@ -476,7 +430,7 @@ function draw() {
     const fr = document.getElementById('floatingRestart'); if (fr) fr.style.display = 'block';
   } else {
     const enemyCount = (levels[currentLevel] && levels[currentLevel].enemies) ? levels[currentLevel].enemies.length : 0;
-    const sessionId = levels[currentLevel]?.sessionId || `procedural-${currentLevel}`;
+    const sessionId = levels[currentLevel]?.sessionId || `level-${currentLevel}`;
     status.textContent = `HP: ${player.hp}    Potions: ${potionsCount}    Enemies: ${enemyCount}    Level: ${currentLevel}    Session: ${sessionId}`;
     // ensure overlays are hidden when alive
     const deathO = document.getElementById('deathOverlay'); if (deathO) deathO.style.display = 'none';
@@ -485,7 +439,7 @@ function draw() {
 }
 
 function tryMove(dx, dy) {
-  if (gameOver || cutsceneActive) return;
+  if (!player || gameOver || cutsceneActive) return;
   const nx = player.x + dx;
   const ny = player.y + dy;
   const tile = tileAt(nx, ny);
@@ -514,7 +468,13 @@ function tryMove(dx, dy) {
   }
   if (tile === '>') {
     // go down: generate next level if missing
-    if (!levels[currentLevel+1]) generateLevel(currentLevel + 1, reflectionModelForLevel(currentLevel + 1));
+    if (!levels[currentLevel+1]) {
+      const model = reflectionModelForLevel(currentLevel + 1);
+      if (!model || !generateLevel(currentLevel + 1, model)) {
+        notifyNoReflectionData();
+        return;
+      }
+    }
     currentLevel++;
     const lvl = levels[currentLevel];
     const target = lvl.stairs.up || randomFree();
@@ -653,7 +613,7 @@ async function bootstrapGame() {
 }
 
 bootstrapGame().catch((err) => {
-  console.warn("Bootstrap failed, starting with procedural fallback:", err);
+  console.warn("Bootstrap failed:", err);
   startReflectionStream();
   if (!loadGame()) initGame();
 });
@@ -664,6 +624,7 @@ const menuToggle = document.getElementById('menuToggle');
 const startBtn = document.getElementById('startBtn');
 const resumeBtn = document.getElementById('resumeBtn');
 const showInvBtn = document.getElementById('showInvBtn');
+const tryFreshLevelBtn = document.getElementById('tryFreshLevelBtn');
 const closeMenuBtn = document.getElementById('closeMenuBtn');
 const nostrPubkeyInput = document.getElementById('nostrPubkeyInput');
 const saveNostrPubkeyBtn = document.getElementById('saveNostrPubkeyBtn');
@@ -681,6 +642,14 @@ closeMenuBtn.addEventListener('click', () => { menu.style.display = 'none'; });
 startBtn.addEventListener('click', () => { clearSave(); initGame(); menu.style.display='none'; });
 resumeBtn.addEventListener('click', () => { menu.style.display='none'; });
 showInvBtn.addEventListener('click', () => { window.gameControls.openInventory(); });
+if (tryFreshLevelBtn) {
+  const runTryFreshLevel = () => {
+    tryFreshLevel();
+    menu.style.display = 'none';
+  };
+  tryFreshLevelBtn.addEventListener('click', runTryFreshLevel);
+  tryFreshLevelBtn.addEventListener('touchstart', (ev) => { ev.preventDefault(); runTryFreshLevel(); });
+}
 if (nostrPubkeyInput) {
   nostrPubkeyInput.value = window.NANOBOT_PUBKEY || getSavedNanobotPubkey();
 }
