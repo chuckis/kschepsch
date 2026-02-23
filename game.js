@@ -1,14 +1,247 @@
 import * as ROT from "https://unpkg.com/rot-js/lib/index.js";
+import {NostrConnector} from "./nostr/NostrConnector.js";
+import {ReflectionParser} from "./reflection/ReflectionParser.js";
+import {LevelBuilder} from "./level/LevelBuilder.js";
+import {LevelManager} from "./level/LevelManager.js";
 
-// параметры карты и игры
 const MAP_W = 40;
 const MAP_H = 22;
-const ENEMIES_COUNT = 6;
-const ITEMS_COUNT = 8;
+const NOSTR_KIND_REFLECTION = 31337;
+const NOSTR_TAG_REFLECTION = "reflection";
+const DEFAULT_NOSTR_RELAY = "wss://relay.damus.io";
+const DEFAULT_NOSTR_RELAYS = ["wss://relay.damus.io", "wss://relay.nostr.band", "wss://purplepag.es"];
+const NANOBOT_PUBKEY_STORAGE_KEY = "kschepsch-nanobot-pubkey-v1";
+const TEST_LEVEL_PATH = "./test/test-level.json";
+const TEST_EVENT_PATH = "./test/test-event.json";
 
 // levels
 const levels = [];
 let currentLevel = 0;
+const reflectionQueue = [];
+const reflectionEvents = [];
+let eventSortOrder = "desc";
+let testReflectionPayload = null;
+let testReflectionLoadAttempted = false;
+
+const reflectionParser = new ReflectionParser();
+const levelBuilder = new LevelBuilder({baseWidth: MAP_W, baseHeight: MAP_H});
+const levelManager = new LevelManager(levelBuilder);
+const nostrConnector = new NostrConnector({
+  relayUrls: window.REFLECTION_RELAY_URLS || (window.REFLECTION_RELAY_URL ? [window.REFLECTION_RELAY_URL] : DEFAULT_NOSTR_RELAYS),
+  lookbackSeconds: 24 * 60 * 60,
+  limit: 200
+});
+let reflectionStreamStarted = false;
+
+function getSavedNanobotPubkey() {
+  try {
+    return localStorage.getItem(NANOBOT_PUBKEY_STORAGE_KEY) || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function saveNanobotPubkey(pubkey) {
+  try {
+    if (!pubkey) {
+      localStorage.removeItem(NANOBOT_PUBKEY_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(NANOBOT_PUBKEY_STORAGE_KEY, pubkey);
+  } catch (err) {
+    console.warn("Failed to persist NANOBOT pubkey:", err);
+  }
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeTsToMillis(value) {
+  if (!Number.isFinite(value)) return Date.now();
+  return value < 1e12 ? value * 1000 : value;
+}
+
+function rememberReflectionEvent(event, model, source = "nostr") {
+  const eventId = event?.id || `${source}-${model.sessionId}-${Date.now()}`;
+  const existing = reflectionEvents.findIndex((entry) => entry.eventId === eventId);
+  const entry = {
+    eventId,
+    model,
+    source,
+    rawEvent: event || null,
+    createdAtMs: normalizeTsToMillis(model?.createdAt || event?.created_at)
+  };
+
+  if (existing >= 0) reflectionEvents.splice(existing, 1);
+  reflectionEvents.unshift(entry);
+  if (reflectionEvents.length > 100) reflectionEvents.length = 100;
+}
+
+function renderEventPicker() {
+  const list = document.getElementById("eventList");
+  const sortBtn = document.getElementById("eventSortBtn");
+  if (!list) return;
+  if (sortBtn) sortBtn.textContent = eventSortOrder === "desc" ? "Sort: Newest" : "Sort: Oldest";
+  list.innerHTML = "";
+
+  if (reflectionEvents.length === 0) {
+    const empty = document.createElement("div");
+    empty.textContent = "No events yet";
+    empty.style.color = "#999";
+    empty.style.fontSize = "12px";
+    list.appendChild(empty);
+    return;
+  }
+
+  const sorted = reflectionEvents
+    .slice()
+    .sort((a, b) => eventSortOrder === "desc" ? b.createdAtMs - a.createdAtMs : a.createdAtMs - b.createdAtMs);
+
+  sorted.forEach((entry) => {
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.justifyContent = "space-between";
+    row.style.gap = "8px";
+    row.style.padding = "6px";
+    row.style.border = "1px solid #2b2b2b";
+    row.style.borderRadius = "6px";
+    row.style.background = "#101010";
+
+    const meta = document.createElement("div");
+    meta.style.fontSize = "12px";
+    meta.style.lineHeight = "1.25";
+    const when = new Date(entry.createdAtMs).toLocaleString();
+    meta.textContent = `${entry.model.sessionId} (${entry.source}, ${when})`;
+
+    const goBtn = document.createElement("button");
+    goBtn.textContent = "GO";
+    goBtn.dataset.eventId = entry.eventId;
+    goBtn.style.width = "52px";
+    goBtn.style.padding = "6px 8px";
+
+    row.appendChild(meta);
+    row.appendChild(goBtn);
+    list.appendChild(row);
+  });
+}
+
+function fixtureToPayload(fixture) {
+  if (!fixture || typeof fixture !== "object") return null;
+  if (typeof fixture.content === "string") {
+    try {
+      return JSON.parse(fixture.content);
+    } catch (_) {
+      return null;
+    }
+  }
+  if (typeof fixture.session_id === "string" || fixture.metrics || fixture.reflection) return fixture;
+  return null;
+}
+
+async function tryLoadFixture(path) {
+  try {
+    const response = await fetch(path, {cache: "no-store"});
+    if (!response.ok) return null;
+    const json = await response.json();
+    const payload = fixtureToPayload(json);
+    if (!payload) {
+      console.warn("Fixture JSON shape is invalid:", path);
+      return null;
+    }
+    return payload;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function loadTestReflectionPayload() {
+  if (testReflectionLoadAttempted) return testReflectionPayload;
+  testReflectionLoadAttempted = true;
+
+  const fromEvent = await tryLoadFixture(TEST_EVENT_PATH);
+  if (fromEvent) {
+    testReflectionPayload = fromEvent;
+    const model = reflectionParser.parsePayload(cloneJson(fromEvent));
+    rememberReflectionEvent({id: "fixture-test-event"}, model, "fixture");
+    console.log("Loaded test reflection fixture:", TEST_EVENT_PATH);
+    return testReflectionPayload;
+  }
+
+  const fromLevel = await tryLoadFixture(TEST_LEVEL_PATH);
+  if (fromLevel) {
+    testReflectionPayload = fromLevel;
+    const model = reflectionParser.parsePayload(cloneJson(fromLevel));
+    rememberReflectionEvent({id: "fixture-test-level"}, model, "fixture");
+    console.log("Loaded test reflection fixture:", TEST_LEVEL_PATH);
+    return testReflectionPayload;
+  }
+
+  console.log("No test reflection fixture found.");
+  return null;
+}
+
+function reflectionModelForLevel(levelIndex) {
+  if (reflectionQueue.length > 0) return reflectionQueue.shift();
+  if (testReflectionPayload) {
+    const payload = cloneJson(testReflectionPayload);
+    if (!payload.session_id) payload.session_id = `test-fixture-session-${levelIndex}`;
+    payload.session_id = `${payload.session_id}-lvl${levelIndex}`;
+    return reflectionParser.parsePayload(payload);
+  }
+  return null;
+}
+
+function markMenuNostrEventReady() {
+  const menuBtn = document.getElementById("menuToggle");
+  if (!menuBtn) return;
+  menuBtn.style.background = "rgba(255,140,0,0.95)";
+  menuBtn.style.color = "black";
+  menuBtn.style.border = "1px solid #cc6f00";
+}
+
+function notifyNoReflectionData() {
+  console.warn("No reflection data available. Add a test JSON fixture or wait for a Nostr event.");
+  status.textContent = "No reflection data. Wait for Nostr or add test fixture.";
+}
+
+function enqueueReflectionEvent(event) {
+  try {
+    const model = reflectionParser.parseEvent(event);
+    reflectionQueue.push(model);
+    rememberReflectionEvent(event, model, "nostr");
+    markMenuNostrEventReady();
+    renderEventPicker();
+    console.log("Reflection queued:", model.sessionId, "difficulty:", model.difficulty.toFixed(2));
+  } catch (err) {
+    console.warn("Reflection event ignored:", err.message);
+  }
+}
+
+function startReflectionStream() {
+  const pubkey = window.NANOBOT_PUBKEY || getSavedNanobotPubkey();
+  if (!pubkey) {
+    console.log("Nostr reflection stream disabled: set pubkey in menu or window.NANOBOT_PUBKEY.");
+    return;
+  }
+
+  if (!reflectionStreamStarted) {
+    nostrConnector.onReflection((event, relayUrl) => {
+      if (event.kind !== NOSTR_KIND_REFLECTION) return;
+      const tags = Array.isArray(event.tags) ? event.tags : [];
+      const tagged = tags.some((tag) => Array.isArray(tag) && tag[0] === "t" && tag[1] === NOSTR_TAG_REFLECTION);
+      if (!tagged) return;
+      enqueueReflectionEvent(event);
+      if (relayUrl) console.log("Reflection received from relay:", relayUrl);
+    });
+    reflectionStreamStarted = true;
+  }
+
+  nostrConnector.connect();
+  nostrConnector.subscribe(pubkey);
+  console.log("Nostr reflection stream subscribed for:", pubkey);
+}
 
 const display = new ROT.Display({width: MAP_W, height: MAP_H, fontSize: 18});
 document.getElementById("game").appendChild(display.getContainer());
@@ -118,34 +351,9 @@ const PLAYER_MAX_HP = 10;
 let gameOver = false;
 let cutsceneActive = false;
 
-const cutscenes = {
-  intro: {
-    title: 'Запись в дневнике',
-    blocks: [
-      'Ты спускаешься в темные уровни подземелья, где стены шепчут о забытых героях.',
-      'На поясе звенит последняя фляга. Впереди — поиск артефакта и выход наружу.',
-      'Соберись. Каждая дверь может быть спасением или ловушкой.'
-    ]
-  },
-  level1: {
-    title: 'Глубже во тьму',
-    blocks: [
-      'Сырой воздух становится тяжелее, а шаги звучат чужими.',
-      'Ты чувствуешь, что это место не любит гостей.'
-    ]
-  },
-  level2: {
-    title: 'Следы стражей',
-    blocks: [
-      'На полу — свежие следы когтей и капли зеленоватой крови.',
-      'Кто-то живет здесь. И он рядом.'
-    ]
-  }
-};
 const shownCutscenes = new Set();
 
-function showCutscene(sceneKey) {
-  const scene = cutscenes[sceneKey];
+function showCutscene(sceneKey, scene) {
   if (!scene || shownCutscenes.has(sceneKey)) return;
   const overlay = document.getElementById('cutsceneOverlay');
   const title = document.getElementById('cutsceneTitle');
@@ -171,19 +379,38 @@ function closeCutscene() {
   cutsceneActive = false;
 }
 
-function triggerCutsceneForLevel(levelIndex) {
-  if (levelIndex === 0) return showCutscene('intro');
-  if (levelIndex === 1) return showCutscene('level1');
-  if (levelIndex === 2) return showCutscene('level2');
-  return undefined;
+function triggerCutsceneForTransition(fromLevelIndex, toLevelIndex) {
+  const level = levels[toLevelIndex];
+  if (!level) return;
+
+  let directionText = '';
+  if (Number.isFinite(fromLevelIndex) && Number.isFinite(toLevelIndex)) {
+    if (toLevelIndex > fromLevelIndex) directionText = `Descent: ${fromLevelIndex} -> ${toLevelIndex}`;
+    if (toLevelIndex < fromLevelIndex) directionText = `Ascent: ${fromLevelIndex} -> ${toLevelIndex}`;
+  }
+
+  const sceneKey = level.cutsceneKey || `${fromLevelIndex ?? 'start'}-${toLevelIndex}-${level.sessionId || 'session'}`;
+  const scene = {
+    title: level.cutsceneTitle || level.sessionId || `Level ${toLevelIndex}`,
+    blocks: (Array.isArray(level.cutsceneBlocks) && level.cutsceneBlocks.length > 0)
+      ? (directionText ? [directionText, ...level.cutsceneBlocks] : level.cutsceneBlocks)
+      : [level.narrative || 'Reflection event received.']
+  };
+  return showCutscene(sceneKey, scene);
 }
 
 function initGame() {
   // create first level and set currentLevel
   levels.length = 0;
+  levelManager.restart();
   currentLevel = 0;
   gameOver = false;
-  generateLevel(0);
+  const firstModel = reflectionModelForLevel(0);
+  if (!firstModel) {
+    notifyNoReflectionData();
+    return;
+  }
+  generateLevel(0, firstModel);
   const d = document.getElementById('deathOverlay'); if (d) d.style.display = 'none';
   const fr = document.getElementById('floatingRestart'); if (fr) fr.style.display = 'none';
   // place player at this level
@@ -191,111 +418,50 @@ function initGame() {
   const [px, py] = randomFree();
   player.x = px; player.y = py;
   draw();
-  triggerCutsceneForLevel(0);
+  triggerCutsceneForTransition(null, 0);
   saveGame();
 }
 
-function generateLevel(levelIndex) {
-  const mapLocal = {};
-  const freeLocal = [];
-  const enemiesLocal = [];
-  const itemsLocal = [];
-  const doors = [];
-  const stairs = {up: null, down: null};
-
-  const digger = new ROT.Map.Digger(MAP_W, MAP_H);
-  digger.create((x, y, value) => {
-    // store tiles: '.' = floor, '#' = wall
-    mapLocal[`${x},${y}`] = (value === 0) ? '.' : '#';
-    if (value === 0) freeLocal.push([x, y]);
-  });
-
-  function randomFreeLocal() {
-    const i = Math.floor(ROT.RNG.getUniform() * freeLocal.length);
-    return freeLocal[i].slice();
+function tryFreshLevel(preferredModel = null) {
+  const nextIndex = currentLevel + 1;
+  const model = preferredModel || reflectionModelForLevel(nextIndex);
+  if (!model || !generateLevel(nextIndex, model)) {
+    notifyNoReflectionData();
+    return;
+  }
+  if (preferredModel) {
+    const qIdx = reflectionQueue.indexOf(preferredModel);
+    if (qIdx >= 0) reflectionQueue.splice(qIdx, 1);
   }
 
-  // place enemies
-  for (let i = 0; i < ENEMIES_COUNT; i++) {
-    let [x, y] = randomFreeLocal();
-    enemiesLocal.push({x, y, hp: 3});
+  currentLevel = nextIndex;
+  if (!player) player = {hp: PLAYER_MAX_HP, x: 0, y: 0, inv: []};
+  if (player.hp <= 0) {
+    player.hp = PLAYER_MAX_HP;
+    gameOver = false;
   }
 
-  // place items
-  for (let i = 0; i < ITEMS_COUNT; i++) {
-    let [x, y] = randomFreeLocal();
-    const type = ROT.RNG.getUniform() < 0.65 ? 'potion' : 'herb';
-    itemsLocal.push({x, y, type});
-  }
+  const lvl = levels[currentLevel];
+  const target = lvl.stairs.up || randomFree();
+  player.x = target[0];
+  player.y = target[1];
+  draw();
+  saveGame();
+  triggerCutsceneForTransition(nextIndex - 1, currentLevel);
+}
 
-  // stairs: up and down
-  const up = randomFreeLocal();
-  const down = randomFreeLocal();
-  mapLocal[`${up[0]},${up[1]}`] = '<';
-  mapLocal[`${down[0]},${down[1]}`] = '>';
-  stairs.up = up; stairs.down = down;
-
-  // place doors in 1-tile-wide corridors: at most one door per corridor component
-  const isFloorLike = (x, y) => {
-    const t = mapLocal[`${x},${y}`];
-    return t === '.' || t === '<' || t === '>' || t === 'D';
-  };
-  const isWall = (x, y) => mapLocal[`${x},${y}`] === '#';
-  const isOneTileCorridorCell = (x, y) => {
-    const vertical = isFloorLike(x, y - 1) && isFloorLike(x, y + 1) && isWall(x - 1, y) && isWall(x + 1, y);
-    const horizontal = isFloorLike(x - 1, y) && isFloorLike(x + 1, y) && isWall(x, y - 1) && isWall(x, y + 1);
-    return vertical || horizontal;
-  };
-
-  const corridorSet = new Set();
-  for (const [x, y] of freeLocal) {
-    if (isOneTileCorridorCell(x, y)) corridorSet.add(`${x},${y}`);
-  }
-
-  const visited = new Set();
-  const corridorComponents = [];
-  for (const key of corridorSet) {
-    if (visited.has(key)) continue;
-    const comp = [];
-    const q = [key];
-    visited.add(key);
-    while (q.length) {
-      const cur = q.pop();
-      comp.push(cur);
-      const [cx, cy] = cur.split(',').map(Number);
-      const neighbors = [`${cx + 1},${cy}`, `${cx - 1},${cy}`, `${cx},${cy + 1}`, `${cx},${cy - 1}`];
-      for (const n of neighbors) {
-        if (!corridorSet.has(n) || visited.has(n)) continue;
-        visited.add(n);
-        q.push(n);
-      }
-    }
-    corridorComponents.push(comp);
-  }
-
-  const stairKeys = new Set([`${up[0]},${up[1]}`, `${down[0]},${down[1]}`]);
-  for (const comp of corridorComponents) {
-    const candidates = [];
-    for (const key of comp) {
-      if (stairKeys.has(key)) continue;
-      const [x, y] = key.split(',').map(Number);
-      const adj = [[1,0],[-1,0],[0,1],[0,-1]];
-      const touchesRoomLike = adj.some(([dx, dy]) => {
-        const nx = x + dx, ny = y + dy;
-        const nKey = `${nx},${ny}`;
-        return isFloorLike(nx, ny) && !corridorSet.has(nKey);
-      });
-      if (touchesRoomLike) candidates.push([x, y]);
-    }
-
-    if (!candidates.length) continue;
-    const idx = Math.floor(ROT.RNG.getUniform() * candidates.length);
-    const [dx, dy] = candidates[idx];
-    mapLocal[`${dx},${dy}`] = 'D';
-    doors.push([dx, dy]);
-  }
-
-  levels[levelIndex] = {map: mapLocal, freeCells: freeLocal, enemies: enemiesLocal, items: itemsLocal, doors, stairs};
+function generateLevel(levelIndex, reflectionModel) {
+  if (!reflectionModel) return false;
+  const {level} = levelManager.load(reflectionModel, {width: MAP_W, height: MAP_H});
+  const reflection = reflectionModel.raw?.reflection || {};
+  level.cutsceneKey = `${level.sessionId || 'session'}-${levelIndex}`;
+  level.cutsceneTitle = reflection.goal || level.sessionId || `Level ${levelIndex}`;
+  level.cutsceneBlocks = [
+    reflection.summary || level.narrative,
+    reflection.outcome ? `Outcome: ${reflection.outcome}` : ''
+  ].filter(Boolean);
+  levels[levelIndex] = level;
+  return true;
 }
 
 // найти случайную свободную позицию (вспомогательная для других функций)
@@ -332,8 +498,8 @@ function draw() {
     if (val === '>') display.draw(x,y,'>','white');
   }
 
-  for (const it of lvl.items) display.draw(it.x, it.y, '!', 'lime');
-  for (const e of lvl.enemies) display.draw(e.x, e.y, 'E', 'red');
+  for (const it of lvl.items) display.draw(it.x, it.y, it.char || '!', it.color || 'lime');
+  for (const e of lvl.enemies) display.draw(e.x, e.y, e.char || 'E', e.color || 'red');
   display.draw(player.x, player.y, '@', 'yellow');
 
   const potionsCount = player.inv.filter(i => i === 'potion').length;
@@ -345,7 +511,8 @@ function draw() {
     const fr = document.getElementById('floatingRestart'); if (fr) fr.style.display = 'block';
   } else {
     const enemyCount = (levels[currentLevel] && levels[currentLevel].enemies) ? levels[currentLevel].enemies.length : 0;
-    status.textContent = `HP: ${player.hp}    Potions: ${potionsCount}    Enemies: ${enemyCount}    Level: ${currentLevel}`;
+    const sessionId = levels[currentLevel]?.sessionId || `level-${currentLevel}`;
+    status.textContent = `HP: ${player.hp}    Potions: ${potionsCount}    Enemies: ${enemyCount}    Level: ${currentLevel}    Session: ${sessionId}`;
     // ensure overlays are hidden when alive
     const deathO = document.getElementById('deathOverlay'); if (deathO) deathO.style.display = 'none';
     const fr2 = document.getElementById('floatingRestart'); if (fr2) fr2.style.display = 'none';
@@ -353,7 +520,7 @@ function draw() {
 }
 
 function tryMove(dx, dy) {
-  if (gameOver || cutsceneActive) return;
+  if (!player || gameOver || cutsceneActive) return;
   const nx = player.x + dx;
   const ny = player.y + dy;
   const tile = tileAt(nx, ny);
@@ -371,25 +538,34 @@ function tryMove(dx, dy) {
   if (tile === '<') {
     // go up if exists
     if (currentLevel > 0) {
+      const fromLevel = currentLevel;
       // move to previous level at matching stairs.down or random
       currentLevel--;
       const lvl = levels[currentLevel];
       const target = lvl.stairs.down || randomFree();
       player.x = target[0]; player.y = target[1];
       draw();
+      triggerCutsceneForTransition(fromLevel, currentLevel);
       return;
     }
   }
   if (tile === '>') {
+    const fromLevel = currentLevel;
     // go down: generate next level if missing
-    if (!levels[currentLevel+1]) generateLevel(currentLevel+1);
+    if (!levels[currentLevel+1]) {
+      const model = reflectionModelForLevel(currentLevel + 1);
+      if (!model || !generateLevel(currentLevel + 1, model)) {
+        notifyNoReflectionData();
+        return;
+      }
+    }
     currentLevel++;
     const lvl = levels[currentLevel];
     const target = lvl.stairs.up || randomFree();
     player.x = target[0]; player.y = target[1];
     draw();
     saveGame();
-    triggerCutsceneForLevel(currentLevel);
+    triggerCutsceneForTransition(fromLevel, currentLevel);
     return;
   }
 
@@ -411,17 +587,11 @@ function tryMove(dx, dy) {
   const it = itemAt(nx, ny);
   player.x = nx; player.y = ny;
   if (it) {
-    if (it.type === 'potion') {
-      player.inv.push('potion');
-      const idx = levels[currentLevel].items.indexOf(it);
-      if (idx >= 0) levels[currentLevel].items.splice(idx, 1);
-      console.log('Picked up a potion');
-    } else if (it.type === 'herb') {
-      const idx = levels[currentLevel].items.indexOf(it);
-      if (idx >= 0) levels[currentLevel].items.splice(idx, 1);
-      player.hp = Math.min(PLAYER_MAX_HP, player.hp + 2);
-      console.log('Picked up a healing herb. HP:', player.hp);
-    }
+    // For now every acquisition grants a consumable charge to preserve existing controls.
+    player.inv.push('potion');
+    const idx = levels[currentLevel].items.indexOf(it);
+    if (idx >= 0) levels[currentLevel].items.splice(idx, 1);
+    console.log('Picked up:', it.name || it.type || 'item');
   }
 
   enemiesAct();
@@ -520,9 +690,18 @@ document.addEventListener('touchend', e => {
 });
 
 // initialize the game on load: try to restore save, otherwise start fresh
-if (!loadGame()) {
-  initGame();
+async function bootstrapGame() {
+  await loadTestReflectionPayload();
+  renderEventPicker();
+  startReflectionStream();
+  if (!loadGame()) initGame();
 }
+
+bootstrapGame().catch((err) => {
+  console.warn("Bootstrap failed:", err);
+  startReflectionStream();
+  if (!loadGame()) initGame();
+});
 
 // wire mobile/menu buttons
 const menu = document.getElementById('menu');
@@ -530,21 +709,85 @@ const menuToggle = document.getElementById('menuToggle');
 const startBtn = document.getElementById('startBtn');
 const resumeBtn = document.getElementById('resumeBtn');
 const showInvBtn = document.getElementById('showInvBtn');
+const tryFreshLevelBtn = document.getElementById('tryFreshLevelBtn');
+const eventPicker = document.getElementById('eventPicker');
+const eventList = document.getElementById('eventList');
+const eventSortBtn = document.getElementById('eventSortBtn');
 const closeMenuBtn = document.getElementById('closeMenuBtn');
+const nostrPubkeyInput = document.getElementById('nostrPubkeyInput');
+const saveNostrPubkeyBtn = document.getElementById('saveNostrPubkeyBtn');
 const mobileControls = document.getElementById('mobileControls');
 const dpad = document.getElementById('dpad');
 const useBtn = document.getElementById('useBtn');
 const invBtn = document.getElementById('invBtn');
 const cutsceneContinue = document.getElementById('cutsceneContinue');
 
-menuToggle.addEventListener('click', () => { menu.style.display = 'flex'; });
+const openMenu = () => {
+  menu.style.display = 'flex';
+  renderEventPicker();
+};
+menuToggle.addEventListener('click', openMenu);
 // also ensure touch starts toggle menu on mobile
-menuToggle.addEventListener('touchstart', (ev) => { ev.preventDefault(); menu.style.display = 'flex'; });
-closeMenuBtn.addEventListener('click', () => { menu.style.display = 'none'; });
+menuToggle.addEventListener('touchstart', (ev) => { ev.preventDefault(); openMenu(); });
+closeMenuBtn.addEventListener('click', () => {
+  if (eventPicker) eventPicker.style.display = 'none';
+  menu.style.display = 'none';
+});
 // restart: clear save and init fresh
-startBtn.addEventListener('click', () => { clearSave(); initGame(); menu.style.display='none'; });
-resumeBtn.addEventListener('click', () => { menu.style.display='none'; });
+startBtn.addEventListener('click', () => {
+  clearSave();
+  initGame();
+  if (eventPicker) eventPicker.style.display = 'none';
+  menu.style.display='none';
+});
+resumeBtn.addEventListener('click', () => {
+  if (eventPicker) eventPicker.style.display = 'none';
+  menu.style.display='none';
+});
 showInvBtn.addEventListener('click', () => { window.gameControls.openInventory(); });
+if (tryFreshLevelBtn) {
+  const openEventPicker = () => {
+    if (!eventPicker) return;
+    renderEventPicker();
+    eventPicker.style.display = eventPicker.style.display === 'none' ? 'block' : 'none';
+  };
+  tryFreshLevelBtn.addEventListener('click', openEventPicker);
+  tryFreshLevelBtn.addEventListener('touchstart', (ev) => { ev.preventDefault(); openEventPicker(); });
+}
+if (eventList) {
+  eventList.addEventListener('click', (ev) => {
+    const target = ev.target instanceof Element ? ev.target : null;
+    const btn = target ? target.closest('button[data-event-id]') : null;
+    if (!btn) return;
+    const selected = reflectionEvents.find((entry) => entry.eventId === btn.dataset.eventId);
+    if (!selected) return;
+    tryFreshLevel(selected.model);
+    if (eventPicker) eventPicker.style.display = 'none';
+    menu.style.display = 'none';
+  });
+}
+if (eventSortBtn) {
+  const toggleSort = () => {
+    eventSortOrder = eventSortOrder === "desc" ? "asc" : "desc";
+    renderEventPicker();
+  };
+  eventSortBtn.addEventListener('click', toggleSort);
+  eventSortBtn.addEventListener('touchstart', (ev) => { ev.preventDefault(); toggleSort(); });
+}
+if (nostrPubkeyInput) {
+  nostrPubkeyInput.value = window.NANOBOT_PUBKEY || getSavedNanobotPubkey();
+}
+if (saveNostrPubkeyBtn) {
+  const saveNostrKey = () => {
+    const value = (nostrPubkeyInput?.value || '').trim();
+    saveNanobotPubkey(value);
+    window.NANOBOT_PUBKEY = value;
+    startReflectionStream();
+    console.log(value ? "Nostr pubkey saved." : "Nostr pubkey cleared.");
+  };
+  saveNostrPubkeyBtn.addEventListener('click', saveNostrKey);
+  saveNostrPubkeyBtn.addEventListener('touchstart', (ev) => { ev.preventDefault(); saveNostrKey(); });
+}
 
 // death overlay no longer contains a restart button (use floating red Restart or Menu)
 

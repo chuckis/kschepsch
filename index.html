@@ -197,6 +197,16 @@
     <div class="menu-panel">
       <h3>Mini Roguelike</h3>
       <div style="margin-bottom:8px">Touch controls: D-pad + actions</div>
+      <input id="nostrPubkeyInput" type="text" placeholder="npub / hex pubkey" style="width:100%;margin:8px 0;padding:8px;box-sizing:border-box;" />
+      <button id="saveNostrPubkeyBtn">Save Nostr Key</button>
+      <button id="tryFreshLevelBtn">Try fresh level</button>
+      <div id="eventPicker" style="display:none;margin:8px 0;padding:8px;background:#161616;border:1px solid #2f2f2f;border-radius:6px;text-align:left;max-height:220px;overflow:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;color:#ddd;">
+          <span>Available reflection events</span>
+          <button id="eventSortBtn" style="width:auto;padding:4px 8px;margin:0;">Sort: Newest</button>
+        </div>
+        <div id="eventList" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
       <button id="startBtn">Start / Restart</button>
       <button id="resumeBtn">Resume</button>
       <button id="showInvBtn">Inventory</button>
