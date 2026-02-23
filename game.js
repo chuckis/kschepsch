@@ -18,6 +18,7 @@ const TEST_EVENT_PATH = "./test/test-event.json";
 const levels = [];
 let currentLevel = 0;
 const reflectionQueue = [];
+const reflectionEvents = [];
 let testReflectionPayload = null;
 let testReflectionLoadAttempted = false;
 
@@ -53,6 +54,70 @@ function saveNanobotPubkey(pubkey) {
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeTsToMillis(value) {
+  if (!Number.isFinite(value)) return Date.now();
+  return value < 1e12 ? value * 1000 : value;
+}
+
+function rememberReflectionEvent(event, model, source = "nostr") {
+  const eventId = event?.id || `${source}-${model.sessionId}-${Date.now()}`;
+  const existing = reflectionEvents.findIndex((entry) => entry.eventId === eventId);
+  const entry = {
+    eventId,
+    model,
+    source,
+    rawEvent: event || null,
+    createdAtMs: normalizeTsToMillis(model?.createdAt || event?.created_at)
+  };
+
+  if (existing >= 0) reflectionEvents.splice(existing, 1);
+  reflectionEvents.unshift(entry);
+  if (reflectionEvents.length > 100) reflectionEvents.length = 100;
+}
+
+function renderEventPicker() {
+  const list = document.getElementById("eventList");
+  if (!list) return;
+  list.innerHTML = "";
+
+  if (reflectionEvents.length === 0) {
+    const empty = document.createElement("div");
+    empty.textContent = "No events yet";
+    empty.style.color = "#999";
+    empty.style.fontSize = "12px";
+    list.appendChild(empty);
+    return;
+  }
+
+  reflectionEvents.forEach((entry) => {
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.justifyContent = "space-between";
+    row.style.gap = "8px";
+    row.style.padding = "6px";
+    row.style.border = "1px solid #2b2b2b";
+    row.style.borderRadius = "6px";
+    row.style.background = "#101010";
+
+    const meta = document.createElement("div");
+    meta.style.fontSize = "12px";
+    meta.style.lineHeight = "1.25";
+    const when = new Date(entry.createdAtMs).toLocaleString();
+    meta.textContent = `${entry.model.sessionId} (${entry.source}, ${when})`;
+
+    const goBtn = document.createElement("button");
+    goBtn.textContent = "GO";
+    goBtn.dataset.eventId = entry.eventId;
+    goBtn.style.width = "52px";
+    goBtn.style.padding = "6px 8px";
+
+    row.appendChild(meta);
+    row.appendChild(goBtn);
+    list.appendChild(row);
+  });
 }
 
 function fixtureToPayload(fixture) {
@@ -91,6 +156,8 @@ async function loadTestReflectionPayload() {
   const fromEvent = await tryLoadFixture(TEST_EVENT_PATH);
   if (fromEvent) {
     testReflectionPayload = fromEvent;
+    const model = reflectionParser.parsePayload(cloneJson(fromEvent));
+    rememberReflectionEvent({id: "fixture-test-event"}, model, "fixture");
     console.log("Loaded test reflection fixture:", TEST_EVENT_PATH);
     return testReflectionPayload;
   }
@@ -98,6 +165,8 @@ async function loadTestReflectionPayload() {
   const fromLevel = await tryLoadFixture(TEST_LEVEL_PATH);
   if (fromLevel) {
     testReflectionPayload = fromLevel;
+    const model = reflectionParser.parsePayload(cloneJson(fromLevel));
+    rememberReflectionEvent({id: "fixture-test-level"}, model, "fixture");
     console.log("Loaded test reflection fixture:", TEST_LEVEL_PATH);
     return testReflectionPayload;
   }
@@ -134,7 +203,9 @@ function enqueueReflectionEvent(event) {
   try {
     const model = reflectionParser.parseEvent(event);
     reflectionQueue.push(model);
+    rememberReflectionEvent(event, model, "nostr");
     markMenuNostrEventReady();
+    renderEventPicker();
     console.log("Reflection queued:", model.sessionId, "difficulty:", model.difficulty.toFixed(2));
   } catch (err) {
     console.warn("Reflection event ignored:", err.message);
@@ -356,12 +427,16 @@ function initGame() {
   saveGame();
 }
 
-function tryFreshLevel() {
+function tryFreshLevel(preferredModel = null) {
   const nextIndex = currentLevel + 1;
-  const model = reflectionModelForLevel(nextIndex);
+  const model = preferredModel || reflectionModelForLevel(nextIndex);
   if (!model || !generateLevel(nextIndex, model)) {
     notifyNoReflectionData();
     return;
+  }
+  if (preferredModel) {
+    const qIdx = reflectionQueue.indexOf(preferredModel);
+    if (qIdx >= 0) reflectionQueue.splice(qIdx, 1);
   }
 
   currentLevel = nextIndex;
@@ -612,6 +687,7 @@ document.addEventListener('touchend', e => {
 // initialize the game on load: try to restore save, otherwise start fresh
 async function bootstrapGame() {
   await loadTestReflectionPayload();
+  renderEventPicker();
   startReflectionStream();
   if (!loadGame()) initGame();
 }
@@ -629,6 +705,8 @@ const startBtn = document.getElementById('startBtn');
 const resumeBtn = document.getElementById('resumeBtn');
 const showInvBtn = document.getElementById('showInvBtn');
 const tryFreshLevelBtn = document.getElementById('tryFreshLevelBtn');
+const eventPicker = document.getElementById('eventPicker');
+const eventList = document.getElementById('eventList');
 const closeMenuBtn = document.getElementById('closeMenuBtn');
 const nostrPubkeyInput = document.getElementById('nostrPubkeyInput');
 const saveNostrPubkeyBtn = document.getElementById('saveNostrPubkeyBtn');
@@ -638,21 +716,49 @@ const useBtn = document.getElementById('useBtn');
 const invBtn = document.getElementById('invBtn');
 const cutsceneContinue = document.getElementById('cutsceneContinue');
 
-menuToggle.addEventListener('click', () => { menu.style.display = 'flex'; });
+const openMenu = () => {
+  menu.style.display = 'flex';
+  renderEventPicker();
+};
+menuToggle.addEventListener('click', openMenu);
 // also ensure touch starts toggle menu on mobile
-menuToggle.addEventListener('touchstart', (ev) => { ev.preventDefault(); menu.style.display = 'flex'; });
-closeMenuBtn.addEventListener('click', () => { menu.style.display = 'none'; });
+menuToggle.addEventListener('touchstart', (ev) => { ev.preventDefault(); openMenu(); });
+closeMenuBtn.addEventListener('click', () => {
+  if (eventPicker) eventPicker.style.display = 'none';
+  menu.style.display = 'none';
+});
 // restart: clear save and init fresh
-startBtn.addEventListener('click', () => { clearSave(); initGame(); menu.style.display='none'; });
-resumeBtn.addEventListener('click', () => { menu.style.display='none'; });
+startBtn.addEventListener('click', () => {
+  clearSave();
+  initGame();
+  if (eventPicker) eventPicker.style.display = 'none';
+  menu.style.display='none';
+});
+resumeBtn.addEventListener('click', () => {
+  if (eventPicker) eventPicker.style.display = 'none';
+  menu.style.display='none';
+});
 showInvBtn.addEventListener('click', () => { window.gameControls.openInventory(); });
 if (tryFreshLevelBtn) {
-  const runTryFreshLevel = () => {
-    tryFreshLevel();
-    menu.style.display = 'none';
+  const openEventPicker = () => {
+    if (!eventPicker) return;
+    renderEventPicker();
+    eventPicker.style.display = eventPicker.style.display === 'none' ? 'block' : 'none';
   };
-  tryFreshLevelBtn.addEventListener('click', runTryFreshLevel);
-  tryFreshLevelBtn.addEventListener('touchstart', (ev) => { ev.preventDefault(); runTryFreshLevel(); });
+  tryFreshLevelBtn.addEventListener('click', openEventPicker);
+  tryFreshLevelBtn.addEventListener('touchstart', (ev) => { ev.preventDefault(); openEventPicker(); });
+}
+if (eventList) {
+  eventList.addEventListener('click', (ev) => {
+    const target = ev.target instanceof Element ? ev.target : null;
+    const btn = target ? target.closest('button[data-event-id]') : null;
+    if (!btn) return;
+    const selected = reflectionEvents.find((entry) => entry.eventId === btn.dataset.eventId);
+    if (!selected) return;
+    tryFreshLevel(selected.model);
+    if (eventPicker) eventPicker.style.display = 'none';
+    menu.style.display = 'none';
+  });
 }
 if (nostrPubkeyInput) {
   nostrPubkeyInput.value = window.NANOBOT_PUBKEY || getSavedNanobotPubkey();

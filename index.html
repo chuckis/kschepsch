@@ -200,6 +200,10 @@
       <input id="nostrPubkeyInput" type="text" placeholder="npub / hex pubkey" style="width:100%;margin:8px 0;padding:8px;box-sizing:border-box;" />
       <button id="saveNostrPubkeyBtn">Save Nostr Key</button>
       <button id="tryFreshLevelBtn">Try fresh level</button>
+      <div id="eventPicker" style="display:none;margin:8px 0;padding:8px;background:#161616;border:1px solid #2f2f2f;border-radius:6px;text-align:left;max-height:220px;overflow:auto;">
+        <div style="margin-bottom:6px;color:#ddd;">Available reflection events</div>
+        <div id="eventList" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
       <button id="startBtn">Start / Restart</button>
       <button id="resumeBtn">Resume</button>
       <button id="showInvBtn">Inventory</button>
