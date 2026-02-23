@@ -19,6 +19,7 @@ const levels = [];
 let currentLevel = 0;
 const reflectionQueue = [];
 const reflectionEvents = [];
+let eventSortOrder = "desc";
 let testReflectionPayload = null;
 let testReflectionLoadAttempted = false;
 
@@ -79,7 +80,9 @@ function rememberReflectionEvent(event, model, source = "nostr") {
 
 function renderEventPicker() {
   const list = document.getElementById("eventList");
+  const sortBtn = document.getElementById("eventSortBtn");
   if (!list) return;
+  if (sortBtn) sortBtn.textContent = eventSortOrder === "desc" ? "Sort: Newest" : "Sort: Oldest";
   list.innerHTML = "";
 
   if (reflectionEvents.length === 0) {
@@ -91,7 +94,11 @@ function renderEventPicker() {
     return;
   }
 
-  reflectionEvents.forEach((entry) => {
+  const sorted = reflectionEvents
+    .slice()
+    .sort((a, b) => eventSortOrder === "desc" ? b.createdAtMs - a.createdAtMs : a.createdAtMs - b.createdAtMs);
+
+  sorted.forEach((entry) => {
     const row = document.createElement("div");
     row.style.display = "flex";
     row.style.alignItems = "center";
@@ -707,6 +714,7 @@ const showInvBtn = document.getElementById('showInvBtn');
 const tryFreshLevelBtn = document.getElementById('tryFreshLevelBtn');
 const eventPicker = document.getElementById('eventPicker');
 const eventList = document.getElementById('eventList');
+const eventSortBtn = document.getElementById('eventSortBtn');
 const closeMenuBtn = document.getElementById('closeMenuBtn');
 const nostrPubkeyInput = document.getElementById('nostrPubkeyInput');
 const saveNostrPubkeyBtn = document.getElementById('saveNostrPubkeyBtn');
@@ -759,6 +767,14 @@ if (eventList) {
     if (eventPicker) eventPicker.style.display = 'none';
     menu.style.display = 'none';
   });
+}
+if (eventSortBtn) {
+  const toggleSort = () => {
+    eventSortOrder = eventSortOrder === "desc" ? "asc" : "desc";
+    renderEventPicker();
+  };
+  eventSortBtn.addEventListener('click', toggleSort);
+  eventSortBtn.addEventListener('touchstart', (ev) => { ev.preventDefault(); toggleSort(); });
 }
 if (nostrPubkeyInput) {
   nostrPubkeyInput.value = window.NANOBOT_PUBKEY || getSavedNanobotPubkey();
