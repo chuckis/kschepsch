@@ -9,6 +9,7 @@ const MAP_H = 22;
 const NOSTR_KIND_REFLECTION = 31337;
 const NOSTR_TAG_REFLECTION = "reflection";
 const DEFAULT_NOSTR_RELAY = "wss://relay.damus.io";
+const DEFAULT_NOSTR_RELAYS = ["wss://relay.damus.io", "wss://relay.nostr.band", "wss://purplepag.es"];
 const NANOBOT_PUBKEY_STORAGE_KEY = "kschepsch-nanobot-pubkey-v1";
 const TEST_LEVEL_PATH = "./test/test-level.json";
 const TEST_EVENT_PATH = "./test/test-event.json";
@@ -24,7 +25,9 @@ const reflectionParser = new ReflectionParser();
 const levelBuilder = new LevelBuilder({baseWidth: MAP_W, baseHeight: MAP_H});
 const levelManager = new LevelManager(levelBuilder);
 const nostrConnector = new NostrConnector({
-  relayUrl: window.REFLECTION_RELAY_URL || DEFAULT_NOSTR_RELAY
+  relayUrls: window.REFLECTION_RELAY_URLS || (window.REFLECTION_RELAY_URL ? [window.REFLECTION_RELAY_URL] : DEFAULT_NOSTR_RELAYS),
+  lookbackSeconds: 24 * 60 * 60,
+  limit: 200
 });
 let reflectionStreamStarted = false;
 
@@ -146,12 +149,13 @@ function startReflectionStream() {
   }
 
   if (!reflectionStreamStarted) {
-    nostrConnector.onReflection((event) => {
+    nostrConnector.onReflection((event, relayUrl) => {
       if (event.kind !== NOSTR_KIND_REFLECTION) return;
       const tags = Array.isArray(event.tags) ? event.tags : [];
       const tagged = tags.some((tag) => Array.isArray(tag) && tag[0] === "t" && tag[1] === NOSTR_TAG_REFLECTION);
       if (!tagged) return;
       enqueueReflectionEvent(event);
+      if (relayUrl) console.log("Reflection received from relay:", relayUrl);
     });
     reflectionStreamStarted = true;
   }
