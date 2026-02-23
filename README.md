@@ -1,73 +1,104 @@
-Mini Roguelike
-===============
+Reflection-Driven Roguelike
+==========================
 
-A tiny browser-based roguelike built with ROT.js and plain DOM. It runs entirely in the browser and uses `localStorage` to persist runs. The project is intentionally small and designed to be playable on desktop and mobile (touch) devices.
+Browser roguelike on `rot-js` + vanilla JS that builds levels from Nostr reflection events (`kind: 31337`, tag `t=reflection`).
 
-Files of interest
-- `index.html` — game container, mobile controls, overlays and styles.
-- `game.js` — all game logic: map generation, entities, rendering, controls and persistence.
+No backend, no framework, no build step.
 
-Quick features
-- Procedural dungeons (ROT.Map.Digger)
-- Enemies and simple A* movement
-- Items (potions) and basic combat
-- Multi-level support with stairs
-- Mobile-friendly controls: D-pad, touch swipe, action buttons
-- Autosave to `localStorage` (key: `kschepsch-save-v1`)
+What It Does
+- Subscribes to Nostr relays and listens for reflection events.
+- Parses event `content` JSON into an internal reflection model.
+- Generates dungeon levels from reflection data (obstacles -> enemies, acquisitions -> items).
+- Lets you pick a specific event and jump to a fresh level from it.
+- Shows transition cutscenes using event data (`reflection.goal` as title).
+- Saves run state to `localStorage`.
 
-Running locally
-Note: the game uses ES modules, so you must serve it over HTTP/HTTPS (file:// will not work).
+Current Event Sources (priority)
+1. Live Nostr events (queue + event list in menu)
+2. Local fixture `test/test-event.json`
+3. Local fixture `test/test-level.json`
 
-Start a simple HTTP server in the project directory:
+Note: procedural fallback is intentionally disabled.
+If no event/fixture exists, level generation will not start.
+
+Project Structure
+- `index.html` - UI shell, overlays, menu, mobile controls
+- `game.js` - main game loop, rendering, controls, persistence, event picker
+- `nostr/NostrConnector.js` - multi-relay websocket connector + filters
+- `reflection/ReflectionParser.js` - event/content -> reflection model
+- `level/LevelBuilder.js` - reflection model -> generated level
+- `level/LevelManager.js` - level lifecycle management
+- `entities/EntityFactory.js` - enemy/item entity mapping
+- `test/test-event.json` - default local test fixture
+
+Run Locally
+Use any static HTTP server (ES modules required):
 
 ```bash
-# Python 3
 python3 -m http.server 8000
-# then open http://localhost:8000 in your browser
+# open http://localhost:8000
 ```
 
-Or with Node (if you prefer):
+or
 
 ```bash
-# if you have npm
 npx serve . -l 8000
 ```
 
-Controls
-- Keyboard
-  - Arrow keys or WASD to move
-  - U to use a potion
-- Touch / Mobile
-  - On-screen D-pad for movement
-  - Swipe gestures also move the player (swipe up/down/left/right)
-  - Action buttons: U (use potion), I (open inventory)
-- Menu
-  - `Menu` button (top-left on mobile) opens the in-game menu with Start/Restart, Resume and Inventory
+Nostr Integration
+Menu includes a key input (`npub` or hex pubkey) and `Save Nostr Key`.
 
-Persistence
-- The game autosaves after important actions. Save contents are stored in `localStorage` under the key `kschepsch-save-v1`.
-- To clear a save manually: open the menu and tap Start / Restart, or clear the `localStorage` entry from the browser devtools.
+- Saved under `localStorage` key: `kschepsch-nanobot-pubkey-v1`
+- Game save key: `kschepsch-save-v1`
 
-Mobile / Chromium notes & troubleshooting
-- Because the game runs inside an overlay on some WebViews, touch events can sometimes be swallowed by the modal. To improve usability the project includes:
-  - A floating red "Restart" button positioned above overlays (pulses on small screens) so you can always start a new run.
-  - A small × button in the death overlay to dismiss the dialog if needed.
-- If the game feels unresponsive after a restart, make sure you started the game through the floating Restart button or the Menu → Start. If you still see issues:
-  1. Open browser devtools and ensure there are no console errors.
-  2. Confirm the page is served over HTTP/HTTPS (ES module import of ROT.js requires this).
-  3. If necessary, clear `localStorage` (key `kschepsch-save-v1`) and reload.
+Default relays:
+- `wss://relay.damus.io`
+- `wss://relay.nostr.band`
+- `wss://purplepag.es`
 
-Configuration / quick hacks
-- Open `game.js` to tweak constants like `MAP_W`, `MAP_H`, `ENEMIES_COUNT`, and `ITEMS_COUNT`.
-- The generation and entity logic are all in `generateLevel()` and `enemiesAct()`.
+Connector behavior:
+- Uses `since` (24h lookback) and `limit` for backfill + live flow.
+- Supports `npub -> hex` decoding for author filtering.
+- Deduplicates events by `event.id` across relays.
 
-Contributing
-- This is a small project — feel free to open issues or submit PRs. Good starter tasks:
-  - Improve stair linking so down/up always lead to matching staircase.
-  - Add more enemy types or items.
-  - Improve save format or migrate to IndexedDB for larger state.
+Gameplay Controls
+Keyboard:
+- `Arrows` / `WASD` - move
+- `U` - use potion/consumable
 
-License
-- MIT — feel free to reuse and modify.
+Touch/Mobile:
+- On-screen D-pad
+- Swipe movement
+- `U` and `I` action buttons
 
-Enjoy! If you want, I can add deterministic stair pairing next or a small "Saved" toast when a save occurs.
+Menu:
+- `Start / Restart`
+- `Resume`
+- `Inventory`
+- `Save Nostr Key`
+- `Try fresh level`
+
+Try Fresh Level (Event Picker)
+`Try fresh level` toggles an event picker panel:
+- Displays known reflection events (fixture + received Nostr events)
+- Sort toggle: `Newest` / `Oldest`
+- `GO` next to each event creates and enters a new level from that exact event
+
+Cutscenes
+Cutscenes are generated per level transition and tied to target level data:
+- Title: `reflection.goal` (fallback to `session_id`)
+- Body: reflection summary/outcome and transition context (`Ascent`/`Descent`)
+
+Troubleshooting
+No levels generated:
+- Ensure `test/test-event.json` exists, or wait for a matching Nostr event.
+
+No Nostr events showing:
+- Verify pubkey is correct (`npub` or 64-char hex).
+- Check relay availability/network.
+- Confirm event has `kind: 31337` and tag `t=reflection`.
+- Check browser console logs for subscription and parse warnings.
+
+Notes
+- Works offline after fixture load or after events are received.
+- UI and logic are intentionally simple and single-page.
