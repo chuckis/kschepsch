@@ -351,34 +351,9 @@ const PLAYER_MAX_HP = 10;
 let gameOver = false;
 let cutsceneActive = false;
 
-const cutscenes = {
-  intro: {
-    title: 'Запись в дневнике',
-    blocks: [
-      'Ты спускаешься в темные уровни подземелья, где стены шепчут о забытых героях.',
-      'На поясе звенит последняя фляга. Впереди — поиск артефакта и выход наружу.',
-      'Соберись. Каждая дверь может быть спасением или ловушкой.'
-    ]
-  },
-  level1: {
-    title: 'Глубже во тьму',
-    blocks: [
-      'Сырой воздух становится тяжелее, а шаги звучат чужими.',
-      'Ты чувствуешь, что это место не любит гостей.'
-    ]
-  },
-  level2: {
-    title: 'Следы стражей',
-    blocks: [
-      'На полу — свежие следы когтей и капли зеленоватой крови.',
-      'Кто-то живет здесь. И он рядом.'
-    ]
-  }
-};
 const shownCutscenes = new Set();
 
-function showCutscene(sceneKey) {
-  const scene = cutscenes[sceneKey];
+function showCutscene(sceneKey, scene) {
   if (!scene || shownCutscenes.has(sceneKey)) return;
   const overlay = document.getElementById('cutsceneOverlay');
   const title = document.getElementById('cutsceneTitle');
@@ -405,10 +380,17 @@ function closeCutscene() {
 }
 
 function triggerCutsceneForLevel(levelIndex) {
-  if (levelIndex === 0) return showCutscene('intro');
-  if (levelIndex === 1) return showCutscene('level1');
-  if (levelIndex === 2) return showCutscene('level2');
-  return undefined;
+  const level = levels[levelIndex];
+  if (!level) return;
+
+  const sceneKey = level.cutsceneKey || `${levelIndex}-${level.sessionId || 'session'}`;
+  const scene = {
+    title: level.cutsceneTitle || level.sessionId || `Level ${levelIndex}`,
+    blocks: (Array.isArray(level.cutsceneBlocks) && level.cutsceneBlocks.length > 0)
+      ? level.cutsceneBlocks
+      : [level.narrative || 'Reflection event received.']
+  };
+  return showCutscene(sceneKey, scene);
 }
 
 function initGame() {
@@ -465,6 +447,13 @@ function tryFreshLevel(preferredModel = null) {
 function generateLevel(levelIndex, reflectionModel) {
   if (!reflectionModel) return false;
   const {level} = levelManager.load(reflectionModel, {width: MAP_W, height: MAP_H});
+  const reflection = reflectionModel.raw?.reflection || {};
+  level.cutsceneKey = `${level.sessionId || 'session'}-${levelIndex}`;
+  level.cutsceneTitle = reflection.goal || level.sessionId || `Level ${levelIndex}`;
+  level.cutsceneBlocks = [
+    reflection.summary || level.narrative,
+    reflection.outcome ? `Outcome: ${reflection.outcome}` : ''
+  ].filter(Boolean);
   levels[levelIndex] = level;
   return true;
 }
