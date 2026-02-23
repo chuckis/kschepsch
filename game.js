@@ -379,15 +379,21 @@ function closeCutscene() {
   cutsceneActive = false;
 }
 
-function triggerCutsceneForLevel(levelIndex) {
-  const level = levels[levelIndex];
+function triggerCutsceneForTransition(fromLevelIndex, toLevelIndex) {
+  const level = levels[toLevelIndex];
   if (!level) return;
 
-  const sceneKey = level.cutsceneKey || `${levelIndex}-${level.sessionId || 'session'}`;
+  let directionText = '';
+  if (Number.isFinite(fromLevelIndex) && Number.isFinite(toLevelIndex)) {
+    if (toLevelIndex > fromLevelIndex) directionText = `Descent: ${fromLevelIndex} -> ${toLevelIndex}`;
+    if (toLevelIndex < fromLevelIndex) directionText = `Ascent: ${fromLevelIndex} -> ${toLevelIndex}`;
+  }
+
+  const sceneKey = level.cutsceneKey || `${fromLevelIndex ?? 'start'}-${toLevelIndex}-${level.sessionId || 'session'}`;
   const scene = {
-    title: level.cutsceneTitle || level.sessionId || `Level ${levelIndex}`,
+    title: level.cutsceneTitle || level.sessionId || `Level ${toLevelIndex}`,
     blocks: (Array.isArray(level.cutsceneBlocks) && level.cutsceneBlocks.length > 0)
-      ? level.cutsceneBlocks
+      ? (directionText ? [directionText, ...level.cutsceneBlocks] : level.cutsceneBlocks)
       : [level.narrative || 'Reflection event received.']
   };
   return showCutscene(sceneKey, scene);
@@ -412,7 +418,7 @@ function initGame() {
   const [px, py] = randomFree();
   player.x = px; player.y = py;
   draw();
-  triggerCutsceneForLevel(0);
+  triggerCutsceneForTransition(null, 0);
   saveGame();
 }
 
@@ -441,7 +447,7 @@ function tryFreshLevel(preferredModel = null) {
   player.y = target[1];
   draw();
   saveGame();
-  triggerCutsceneForLevel(currentLevel);
+  triggerCutsceneForTransition(nextIndex - 1, currentLevel);
 }
 
 function generateLevel(levelIndex, reflectionModel) {
@@ -532,16 +538,19 @@ function tryMove(dx, dy) {
   if (tile === '<') {
     // go up if exists
     if (currentLevel > 0) {
+      const fromLevel = currentLevel;
       // move to previous level at matching stairs.down or random
       currentLevel--;
       const lvl = levels[currentLevel];
       const target = lvl.stairs.down || randomFree();
       player.x = target[0]; player.y = target[1];
       draw();
+      triggerCutsceneForTransition(fromLevel, currentLevel);
       return;
     }
   }
   if (tile === '>') {
+    const fromLevel = currentLevel;
     // go down: generate next level if missing
     if (!levels[currentLevel+1]) {
       const model = reflectionModelForLevel(currentLevel + 1);
@@ -556,7 +565,7 @@ function tryMove(dx, dy) {
     player.x = target[0]; player.y = target[1];
     draw();
     saveGame();
-    triggerCutsceneForLevel(currentLevel);
+    triggerCutsceneForTransition(fromLevel, currentLevel);
     return;
   }
 
